@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+.env
+*.db
+neo4j_data/
+.mypy_cache/
+.pytest_cache/
+.claude/settings.local.json
