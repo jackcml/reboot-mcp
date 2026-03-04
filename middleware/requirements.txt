@@ -5,7 +5,6 @@ graphiti-core
 tree-sitter
 tree-sitter-python
 tree-sitter-javascript
-tree-sitter-languages
 openai
 pydantic-settings
 python-dotenv

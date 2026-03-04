@@ -2,8 +2,10 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tree_sitter_javascript as ts_js
+import tree_sitter_python as ts_py
 from graphiti_core import Graphiti
-from tree_sitter_languages import get_language, get_parser
+from tree_sitter import Language, Parser
 
 from middleware.graph.client import ENTITY_TYPES, add_code_episode
 
@@ -31,10 +33,18 @@ class CodeNode:
     imports: list[str] = field(default_factory=list)
 
 
+LANGUAGES: dict[str, Language] = {
+    "python": Language(ts_py.language()),
+    "javascript": Language(ts_js.language()),
+    "typescript": Language(ts_js.language()),
+}
+
+
 class CodeParser:
-    def _get_parser(self, language: str):
-        parser = get_parser(language)
-        return parser, get_language(language)
+    def _get_parser(self, language: str) -> Parser:
+        lang = LANGUAGES[language]
+        parser = Parser(lang)
+        return parser
 
     def _extract_python_nodes(self, tree, source_bytes: bytes, file_path: str) -> list[CodeNode]:
         nodes: list[CodeNode] = []
@@ -191,7 +201,7 @@ class CodeParser:
             return []
 
         source_bytes = Path(file_path).read_bytes()
-        parser, _ = self._get_parser(language)
+        parser = self._get_parser(language)
         tree = parser.parse(source_bytes)
 
         if language == "python":
