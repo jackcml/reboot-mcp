@@ -157,9 +157,8 @@ Uses tree-sitter to parse a target codebase into function/class-level nodes and 
 docker compose up neo4j -d
 
 # Start REBOOT middleware + MCP server
-cd middleware
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+pip install -r middleware/requirements.txt
+uvicorn middleware.main:app --reload --port 8000
 
 # Connect an agent to the MCP server
 # Example: Claude Code
