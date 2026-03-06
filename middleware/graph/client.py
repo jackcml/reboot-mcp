@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
 from graphiti_core import Graphiti
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
@@ -25,11 +27,18 @@ async def get_graphiti_client() -> Graphiti:
             model=settings.openai_model,
             base_url=settings.openai_base_url,
         )
+        embedder_config = OpenAIEmbedderConfig(
+            api_key=settings.embedding_api_key,
+            base_url=settings.embedding_base_url,
+            embedding_model=settings.embedding_model,
+        )
         _client = Graphiti(
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
             password=settings.neo4j_password,
             llm_client=OpenAIClient(config=llm_config),
+            embedder=OpenAIEmbedder(config=embedder_config),
+            cross_encoder=OpenAIRerankerClient(config=llm_config),
         )
         await _client.build_indices_and_constraints()
     return _client

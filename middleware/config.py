@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-5-mini"
+    embedding_api_key: str = ""
+    embedding_base_url: str = "https://api.openai.com/v1"
+    embedding_model: str = "text-embedding-3-small"
     sqlite_path: str = str(Path(__file__).parent / "feedback.db")
     server_port: int = 8000
 
