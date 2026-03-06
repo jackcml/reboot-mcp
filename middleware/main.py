@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Reboot MCP", lifespan=lifespan)
 
 # Mount MCP server at /mcp
-app.mount("/mcp", mcp_tools.mcp.http_app())
+app.mount("/mcp", mcp_tools.mcp.http_app(path="/"))
 
 
 @app.get("/health")
