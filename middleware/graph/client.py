@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
 from graphiti_core import Graphiti
+from graphiti_core.llm_client import OpenAIClient
+from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
 
 from middleware.config import settings
@@ -18,10 +20,16 @@ ENTITY_TYPES: dict[str, type] = {
 async def get_graphiti_client() -> Graphiti:
     global _client
     if _client is None:
+        llm_config = LLMConfig(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            base_url=settings.openai_base_url,
+        )
         _client = Graphiti(
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
             password=settings.neo4j_password,
+            llm_client=OpenAIClient(config=llm_config),
         )
         await _client.build_indices_and_constraints()
     return _client
