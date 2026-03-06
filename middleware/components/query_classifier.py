@@ -19,7 +19,7 @@ class QueryClassifier:
     async def classify(self, query: str) -> QueryType:
         try:
             response = await self._openai.chat.completions.create(
-                model="gpt-4o-mini",
+                model=settings.openai_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": query},

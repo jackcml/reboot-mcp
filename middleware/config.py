@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     neo4j_password: str = "reboot_dev"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-5-mini"
     sqlite_path: str = str(Path(__file__).parent / "feedback.db")
     server_port: int = 8000
 
