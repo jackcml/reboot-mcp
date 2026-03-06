@@ -14,7 +14,7 @@ Respond with exactly one word: conceptual, procedural, or factual."""
 
 class QueryClassifier:
     def __init__(self) -> None:
-        self._openai = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._openai = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 
     async def classify(self, query: str) -> QueryType:
         try:

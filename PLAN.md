@@ -42,7 +42,7 @@ reboot-mcp/
 ### 3. `.env.example`
 - NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 - OPENAI_API_KEY (required by Graphiti for embeddings)
-- REBOOT_LLM_PROVIDER (openai or anthropic for QueryClassifier)
+- OPENAI_BASE_URL (base URL for any OpenAI-compatible API)
 
 ### 4. `middleware/requirements.txt`
 - fastapi, uvicorn[standard]
@@ -80,7 +80,7 @@ Custom Graphiti entity types (Pydantic BaseModel):
 
 ### 9. `middleware/components/query_classifier.py`
 - `QueryClassifier` class
-- `classify(query: str) -> QueryType` — calls OpenAI/Anthropic with a classification prompt
+- `classify(query: str) -> QueryType` — calls OpenAI-compatible API with a classification prompt
 - System prompt asks LLM to respond with exactly one of: conceptual, procedural, factual
 - Falls back to "factual" on error
 
@@ -140,7 +140,7 @@ Custom Graphiti entity types (Pydantic BaseModel):
 2. **Shared state via app.state** — Graphiti client, FeedbackLogger, QueryClassifier, etc. stored on FastAPI app state and passed to MCP tools
 3. **SQLite for feedback + confidence** — simple, no extra infra. aiosqlite for async access
 4. **In-memory query log** — recent queries stored in a dict (keyed by query_id) for explain functionality. Bounded to last 1000 queries
-5. **OpenAI as default LLM** — both Graphiti and QueryClassifier use OpenAI. User provides OPENAI_API_KEY
+5. **OpenAI-compatible LLM** — both Graphiti and QueryClassifier use the OpenAI client. User provides OPENAI_API_KEY and optionally OPENAI_BASE_URL to point at any compatible endpoint
 
 ## Implementation Order
 
