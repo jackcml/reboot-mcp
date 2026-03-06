@@ -18,6 +18,9 @@ from middleware.models import (
 )
 
 
+mcp_app = mcp_tools.mcp.http_app(path="/")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- Startup ---
@@ -42,7 +45,8 @@ async def lifespan(app: FastAPI):
     app.state.search_config_selector = search_config_selector
     app.state.confidence_ranker = confidence_ranker
 
-    yield
+    async with mcp_app.router.lifespan_context(mcp_app):
+        yield
 
     # --- Shutdown ---
     await feedback_logger.close()
@@ -52,7 +56,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Reboot MCP", lifespan=lifespan)
 
 # Mount MCP server at /mcp
-app.mount("/mcp", mcp_tools.mcp.http_app(path="/"))
+app.mount("/mcp", mcp_app)
 
 
 @app.get("/health")
