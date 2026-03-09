@@ -1,4 +1,3 @@
-VISUALIZER_HTML = """\
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -42,6 +41,7 @@ VISUALIZER_HTML = """\
   #detail-panel {
     width: 340px; background: #16213e; border-left: 1px solid #0f3460;
     padding: 16px; overflow-y: auto; display: none; font-size: 13px;
+    position: relative;
   }
   #detail-panel.open { display: block; }
   #detail-panel h2 { font-size: 15px; color: #e94560; margin-bottom: 8px; word-break: break-word; }
@@ -87,7 +87,7 @@ VISUALIZER_HTML = """\
 
 <div id="main">
   <div id="graph-container"></div>
-  <div id="detail-panel" style="position:relative;">
+  <div id="detail-panel">
     <button id="detail-close">&times;</button>
     <div id="detail-content"></div>
   </div>
@@ -95,11 +95,11 @@ VISUALIZER_HTML = """\
 
 <script>
 (function() {
-  const nodesDS = new vis.DataSet();
-  const edgesDS = new vis.DataSet();
+  var nodesDS = new vis.DataSet();
+  var edgesDS = new vis.DataSet();
 
-  const container = document.getElementById('graph-container');
-  const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+  var container = document.getElementById('graph-container');
+  var network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
     nodes: {
       shape: 'dot', size: 14,
       font: { size: 12, face: 'Consolas, Monaco, monospace', color: '#e0e0e0' },
@@ -121,162 +121,150 @@ VISUALIZER_HTML = """\
     groups: {}
   });
 
-  let colorMap = {};
-  let filterState = {};
-  let pollTimer = null;
-  let paused = false;
-  let previousNodeIds = new Set();
+  var colorMap = {};
+  var filterState = {};
+  var pollTimer = null;
+  var paused = false;
+  var previousNodeIds = new Set();
 
-  // --- Polling ---
+  /* ---- Polling ---- */
 
-  async function fetchGraph() {
-    const checkedLabels = Object.entries(filterState)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    const params = new URLSearchParams({ limit: '500' });
+  function fetchGraph() {
+    var checkedLabels = Object.keys(filterState).filter(function(k) { return filterState[k]; });
+    var params = new URLSearchParams({ limit: '500' });
     if (checkedLabels.length > 0) params.set('labels', checkedLabels.join(','));
 
-    const resp = await fetch('/api/graph?' + params);
-    const data = await resp.json();
-    colorMap = Object.assign(colorMap, data.colorMap || {});
+    return fetch('/api/graph?' + params)
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        Object.assign(colorMap, data.colorMap || {});
+        applyGroupColors();
 
-    applyGroupColors();
+        var incomingNodeIds = new Set(data.nodes.map(function(n) { return n.id; }));
+        var incomingEdgeIds = new Set(data.edges.map(function(e) { return e.id; }));
+        var existingNodeIds = new Set(nodesDS.getIds());
+        var existingEdgeIds = new Set(edgesDS.getIds());
 
-    const incomingNodeIds = new Set(data.nodes.map(n => n.id));
-    const incomingEdgeIds = new Set(data.edges.map(e => e.id));
-    const existingNodeIds = new Set(nodesDS.getIds());
-    const existingEdgeIds = new Set(edgesDS.getIds());
+        var toAdd = data.nodes.filter(function(n) { return !existingNodeIds.has(n.id); });
+        var toUpdate = data.nodes.filter(function(n) { return existingNodeIds.has(n.id); });
+        var toRemove = Array.from(existingNodeIds).filter(function(id) { return !incomingNodeIds.has(id); });
 
-    // Nodes to add
-    const toAdd = data.nodes.filter(n => !existingNodeIds.has(n.id));
-    // Nodes to update
-    const toUpdate = data.nodes.filter(n => existingNodeIds.has(n.id));
-    // Nodes to remove
-    const toRemove = [...existingNodeIds].filter(id => !incomingNodeIds.has(id));
-
-    // Highlight new nodes
-    const isFirstLoad = previousNodeIds.size === 0;
-    toAdd.forEach(n => {
-      n.color = { background: colorMap[n.group] || '#999', border: isFirstLoad ? undefined : '#e94560' };
-      n.borderWidth = isFirstLoad ? 1.5 : 4;
-      if (!isFirstLoad) {
-        n.shapeProperties = { borderDashes: [5, 5] };
-      }
-    });
-
-    if (toAdd.length > 0) nodesDS.add(toAdd);
-    if (toUpdate.length > 0) {
-      toUpdate.forEach(n => {
-        n.color = { background: colorMap[n.group] || '#999' };
-      });
-      nodesDS.update(toUpdate);
-    }
-    if (toRemove.length > 0) nodesDS.remove(toRemove);
-
-    // Remove highlight after delay
-    if (!isFirstLoad && toAdd.length > 0) {
-      const newIds = toAdd.map(n => n.id);
-      setTimeout(() => {
-        newIds.forEach(id => {
-          if (nodesDS.get(id)) {
-            nodesDS.update({ id, borderWidth: 1.5, shapeProperties: { borderDashes: false } });
-          }
+        var isFirstLoad = previousNodeIds.size === 0;
+        toAdd.forEach(function(n) {
+          n.color = { background: colorMap[n.group] || '#999', border: isFirstLoad ? undefined : '#e94560' };
+          n.borderWidth = isFirstLoad ? 1.5 : 4;
+          if (!isFirstLoad) n.shapeProperties = { borderDashes: [5, 5] };
         });
-      }, 8000);
-    }
 
-    // Edges
-    const edgesToAdd = data.edges.filter(e => !existingEdgeIds.has(e.id));
-    const edgesToUpdate = data.edges.filter(e => existingEdgeIds.has(e.id));
-    const edgesToRemove = [...existingEdgeIds].filter(id => !incomingEdgeIds.has(id));
+        if (toAdd.length > 0) nodesDS.add(toAdd);
+        if (toUpdate.length > 0) {
+          toUpdate.forEach(function(n) { n.color = { background: colorMap[n.group] || '#999' }; });
+          nodesDS.update(toUpdate);
+        }
+        if (toRemove.length > 0) nodesDS.remove(toRemove);
 
-    if (edgesToAdd.length > 0) edgesDS.add(edgesToAdd);
-    if (edgesToUpdate.length > 0) edgesDS.update(edgesToUpdate);
-    if (edgesToRemove.length > 0) edgesDS.remove(edgesToRemove);
+        if (!isFirstLoad && toAdd.length > 0) {
+          var newIds = toAdd.map(function(n) { return n.id; });
+          setTimeout(function() {
+            newIds.forEach(function(id) {
+              if (nodesDS.get(id)) {
+                nodesDS.update({ id: id, borderWidth: 1.5, shapeProperties: { borderDashes: false } });
+              }
+            });
+          }, 8000);
+        }
 
-    previousNodeIds = incomingNodeIds;
-    document.getElementById('stats').textContent =
-      data.nodes.length + ' nodes, ' + data.edges.length + ' edges';
+        var edgesToAdd = data.edges.filter(function(e) { return !existingEdgeIds.has(e.id); });
+        var edgesToUpdate = data.edges.filter(function(e) { return existingEdgeIds.has(e.id); });
+        var edgesToRemove = Array.from(existingEdgeIds).filter(function(id) { return !incomingEdgeIds.has(id); });
+
+        if (edgesToAdd.length > 0) edgesDS.add(edgesToAdd);
+        if (edgesToUpdate.length > 0) edgesDS.update(edgesToUpdate);
+        if (edgesToRemove.length > 0) edgesDS.remove(edgesToRemove);
+
+        previousNodeIds = incomingNodeIds;
+        document.getElementById('stats').textContent =
+          data.nodes.length + ' nodes, ' + data.edges.length + ' edges';
+      });
   }
 
   function applyGroupColors() {
-    const groups = {};
-    for (const [label, color] of Object.entries(colorMap)) {
-      groups[label] = { color: { background: color, border: color } };
-    }
-    network.setOptions({ groups });
+    var groups = {};
+    Object.keys(colorMap).forEach(function(label) {
+      groups[label] = { color: { background: colorMap[label], border: colorMap[label] } };
+    });
+    network.setOptions({ groups: groups });
   }
 
   function startPolling() {
-    const interval = parseInt(document.getElementById('sel-interval').value, 10);
+    var interval = parseInt(document.getElementById('sel-interval').value, 10);
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => { if (!paused) fetchGraph(); }, interval);
+    pollTimer = setInterval(function() { if (!paused) fetchGraph(); }, interval);
   }
 
-  // --- Filters ---
+  /* ---- Filters ---- */
 
-  async function initFilters() {
-    const resp = await fetch('/api/graph/labels');
-    const data = await resp.json();
-    colorMap = Object.assign(colorMap, data.colorMap || {});
-    const defaultUnchecked = new Set(data.defaultUnchecked || []);
+  function initFilters() {
+    return fetch('/api/graph/labels')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        Object.assign(colorMap, data.colorMap || {});
+        var defaultUnchecked = new Set(data.defaultUnchecked || []);
 
-    const bar = document.getElementById('filter-bar');
-    bar.innerHTML = '';
-    data.labels.forEach(label => {
-      const checked = !defaultUnchecked.has(label);
-      filterState[label] = checked;
+        var bar = document.getElementById('filter-bar');
+        bar.innerHTML = '';
+        data.labels.forEach(function(label) {
+          var checked = !defaultUnchecked.has(label);
+          filterState[label] = checked;
 
-      const chip = document.createElement('div');
-      chip.className = 'filter-chip ' + (checked ? 'checked' : 'unchecked');
-      chip.innerHTML =
-        '<span class="filter-dot" style="background:' + (colorMap[label] || '#999') + '"></span>' +
-        '<span>' + label + '</span>';
-      chip.addEventListener('click', () => {
-        filterState[label] = !filterState[label];
-        chip.className = 'filter-chip ' + (filterState[label] ? 'checked' : 'unchecked');
-        previousNodeIds = new Set();
-        fetchGraph();
+          var chip = document.createElement('div');
+          chip.className = 'filter-chip ' + (checked ? 'checked' : 'unchecked');
+          chip.innerHTML =
+            '<span class="filter-dot" style="background:' + (colorMap[label] || '#999') + '"></span>' +
+            '<span>' + label + '</span>';
+          chip.addEventListener('click', function() {
+            filterState[label] = !filterState[label];
+            chip.className = 'filter-chip ' + (filterState[label] ? 'checked' : 'unchecked');
+            previousNodeIds = new Set();
+            fetchGraph();
+          });
+          bar.appendChild(chip);
+        });
       });
-      bar.appendChild(chip);
-    });
   }
 
-  // --- Detail panel ---
+  /* ---- Detail panel ---- */
 
-  network.on('click', async function(params) {
-    if (params.nodes.length === 0) {
-      closeDetail();
-      return;
-    }
-    const uuid = params.nodes[0];
-    const resp = await fetch('/api/graph/node/' + encodeURIComponent(uuid));
-    const detail = await resp.json();
-    if (detail.error) return;
-    showDetail(detail);
+  network.on('click', function(params) {
+    if (params.nodes.length === 0) { closeDetail(); return; }
+    var uuid = params.nodes[0];
+    fetch('/api/graph/node/' + encodeURIComponent(uuid))
+      .then(function(resp) { return resp.json(); })
+      .then(function(detail) { if (!detail.error) showDetail(detail); });
   });
 
   document.getElementById('detail-close').addEventListener('click', closeDetail);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDetail(); });
 
   function showDetail(d) {
-    const panel = document.getElementById('detail-panel');
-    const content = document.getElementById('detail-content');
+    var panel = document.getElementById('detail-panel');
+    var content = document.getElementById('detail-content');
 
-    let attrRows = '';
+    var attrRows = '';
     if (d.attributes) {
-      for (const [k, v] of Object.entries(d.attributes)) {
-        if (v === null || v === undefined || v === '') continue;
-        const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      Object.keys(d.attributes).forEach(function(k) {
+        var v = d.attributes[k];
+        if (v === null || v === undefined || v === '') return;
+        var display = typeof v === 'object' ? JSON.stringify(v) : String(v);
         attrRows += '<tr><td>' + esc(k) + '</td><td>' + esc(display) + '</td></tr>';
-      }
+      });
     }
 
-    let connHtml = '';
+    var connHtml = '';
     if (d.connections && d.connections.length > 0) {
       connHtml = '<h3>Connections (' + d.connections.length + ')</h3><ul>';
-      d.connections.forEach(c => {
-        const arrow = c.direction === 'outgoing' ? '&rarr;' : '&larr;';
+      d.connections.forEach(function(c) {
+        var arrow = c.direction === 'outgoing' ? '&rarr;' : '&larr;';
         connHtml += '<li data-uuid="' + esc(c.connectedUuid) + '">' +
           arrow + ' <b>' + esc(c.edgeName) + '</b> &mdash; ' + esc(c.connectedName || c.connectedUuid) +
           '</li>';
@@ -295,15 +283,14 @@ VISUALIZER_HTML = """\
       '</table>' +
       connHtml;
 
-    // Click on connection to navigate
-    content.querySelectorAll('li[data-uuid]').forEach(li => {
-      li.addEventListener('click', () => {
-        const targetUuid = li.getAttribute('data-uuid');
+    content.querySelectorAll('li[data-uuid]').forEach(function(li) {
+      li.addEventListener('click', function() {
+        var targetUuid = li.getAttribute('data-uuid');
         network.selectNodes([targetUuid]);
         network.focus(targetUuid, { scale: 1.2, animation: true });
         fetch('/api/graph/node/' + encodeURIComponent(targetUuid))
-          .then(r => r.json())
-          .then(detail => { if (!detail.error) showDetail(detail); });
+          .then(function(r) { return r.json(); })
+          .then(function(detail) { if (!detail.error) showDetail(detail); });
       });
     });
 
@@ -315,12 +302,12 @@ VISUALIZER_HTML = """\
   }
 
   function esc(s) {
-    const d = document.createElement('div');
+    var d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
   }
 
-  // --- Controls ---
+  /* ---- Controls ---- */
 
   document.getElementById('btn-pause').addEventListener('click', function() {
     paused = !paused;
@@ -330,15 +317,16 @@ VISUALIZER_HTML = """\
 
   document.getElementById('sel-interval').addEventListener('change', startPolling);
 
-  document.getElementById('btn-fit').addEventListener('click', () => {
+  document.getElementById('btn-fit').addEventListener('click', function() {
     network.fit({ animation: true });
   });
 
-  // --- Init ---
+  /* ---- Init ---- */
 
-  initFilters().then(() => fetchGraph()).then(() => startPolling());
+  initFilters()
+    .then(function() { return fetchGraph(); })
+    .then(function() { startPolling(); });
 })();
 </script>
 </body>
 </html>
-"""

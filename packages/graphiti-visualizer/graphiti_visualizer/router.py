@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse
 
-from graphiti_visualizer.frontend import VISUALIZER_HTML
+_STATIC_DIR = Path(__file__).parent / "static"
+_VISUALIZER_HTML = (_STATIC_DIR / "visualizer.html").read_text(encoding="utf-8")
 
 # 16-color palette for auto-assigning label colors.
 COLOR_PALETTE = [
@@ -75,7 +77,7 @@ def create_visualizer_router(
 
     @router.get("/visualizer", response_class=HTMLResponse)
     async def visualizer_page():
-        return VISUALIZER_HTML
+        return _VISUALIZER_HTML
 
     @router.get("/api/graph")
     async def get_graph_data(
