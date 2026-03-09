@@ -9,3 +9,5 @@ openai
 pydantic-settings
 python-dotenv
 aiosqlite
+
+../packages/graphiti-visualizer
