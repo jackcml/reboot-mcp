@@ -10,6 +10,8 @@ from middleware.components.feedback_logger import FeedbackLogger
 from middleware.components.query_classifier import QueryClassifier
 from middleware.components.search_config import SearchConfigSelector
 from middleware.config import settings
+from graphiti_visualizer import create_visualizer_router
+
 from middleware.graph.client import close_graphiti_client, get_graphiti_client
 from middleware.models import (
     FeedbackRequest,
@@ -57,6 +59,9 @@ app = FastAPI(title="Reboot MCP", lifespan=lifespan)
 
 # Mount MCP server at /mcp
 app.mount("/mcp", mcp_app)
+
+# Mount knowledge graph visualizer
+app.include_router(create_visualizer_router(get_client=get_graphiti_client))
 
 
 @app.get("/health")

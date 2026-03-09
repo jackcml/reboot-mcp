@@ -42,35 +42,37 @@ Any MCP-Compatible Agent
 
 The original plan called for forking OpenCode and hardcoding HTTP hook points at query-send and response-receive. MCP replaces this with a cleaner approach:
 
-| Concern | Fork Approach | MCP Approach |
-|---|---|---|
-| Maintenance | Must rebase on every upstream OpenCode update | Zero fork maintenance — REBOOT is a standalone server |
-| Agent compatibility | Locked to one agent | Works with any MCP-compatible agent (OpenCode, Claude Code, Cursor, etc.) |
-| Integration effort | Modify agent internals, understand Go/TS codebase | Point agent at MCP server URL + add tool descriptions to system prompt |
-| Hook reliability | Guaranteed — hooks are hardcoded | Agent-driven — mitigated by clear tool descriptions and system prompt instructions |
-| Portability | Sponsor is coupled to a specific agent | Sponsor can swap agents freely; REBOOT is agent-agnostic |
+| Concern             | Fork Approach                                     | MCP Approach                                                                       |
+| ------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Maintenance         | Must rebase on every upstream OpenCode update     | Zero fork maintenance — REBOOT is a standalone server                              |
+| Agent compatibility | Locked to one agent                               | Works with any MCP-compatible agent (OpenCode, Claude Code, Cursor, etc.)          |
+| Integration effort  | Modify agent internals, understand Go/TS codebase | Point agent at MCP server URL + add tool descriptions to system prompt             |
+| Hook reliability    | Guaranteed — hooks are hardcoded                  | Agent-driven — mitigated by clear tool descriptions and system prompt instructions |
+| Portability         | Sponsor is coupled to a specific agent            | Sponsor can swap agents freely; REBOOT is agent-agnostic                           |
 
-The one trade-off is that MCP tools are *agent-invoked* rather than *hardcoded*, meaning the agent could theoretically skip calling `reboot_search`. In practice, this is reliably mitigated by including clear instructions in the agent's system prompt (e.g., "Always use the reboot_search tool for codebase queries before answering"). Most MCP-compatible agents follow tool-use instructions consistently.
+The one trade-off is that MCP tools are _agent-invoked_ rather than _hardcoded_, meaning the agent could theoretically skip calling `reboot_search`. In practice, this is reliably mitigated by including clear instructions in the agent's system prompt (e.g., "Always use the reboot_search tool for codebase queries before answering"). Most MCP-compatible agents follow tool-use instructions consistently.
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Agent Integration | MCP server (tool exposure via Model Context Protocol) |
-| Middleware | Python + FastAPI |
-| Knowledge Graph | Graphiti + Neo4j (Docker) |
-| Code Parsing | tree-sitter (function/class boundaries) |
-| Feedback Persistence | SQLite (event log) |
-| Version Control | GitHub — feature branch workflow |
+| Layer                | Technology                                            |
+| -------------------- | ----------------------------------------------------- |
+| Agent Integration    | MCP server (tool exposure via Model Context Protocol) |
+| Middleware           | Python + FastAPI                                      |
+| Knowledge Graph      | Graphiti + Neo4j (Docker)                             |
+| Code Parsing         | tree-sitter (function/class boundaries)               |
+| Feedback Persistence | SQLite (event log)                                    |
+| Version Control      | GitHub — feature branch workflow                      |
 
 ## MCP Tools Exposed
 
 These are the tools the REBOOT MCP server exposes to connected agents:
 
 ### `reboot_search`
+
 **Purpose:** Retrieve adaptive, confidence-ranked context for a developer query.
 
 **Input:**
+
 - `query` (string) — the developer's natural language question
 - `file_context` (string, optional) — current file path or surrounding code for locality hints
 
@@ -79,9 +81,11 @@ These are the tools the REBOOT MCP server exposes to connected agents:
 **Output:** List of ranked context items, each with source file, snippet, confidence score, and relevance explanation.
 
 ### `reboot_feedback`
+
 **Purpose:** Record a usage signal to drive confidence reinforcement or decay.
 
 **Input:**
+
 - `query_id` (string) — ID of the query this feedback relates to
 - `signal` (enum) — one of: `positive`, `negative`, `reformulation`, `context_used`, `context_ignored`
 - `details` (string, optional) — free-text elaboration
@@ -89,17 +93,21 @@ These are the tools the REBOOT MCP server exposes to connected agents:
 **Behavior:** Logs the signal to SQLite and triggers async confidence updates on affected knowledge graph nodes.
 
 ### `reboot_explain`
+
 **Purpose:** Introspect the last retrieval decision for debugging and transparency.
 
 **Input:**
+
 - `query_id` (string, optional) — defaults to most recent query
 
 **Output:** Breakdown of classification result, SearchConfig weights applied, raw vs. post-ranked scores, confidence multipliers per node, and which feedback signals have historically affected those nodes.
 
 ### `reboot_ingest`
+
 **Purpose:** Trigger codebase ingestion into the knowledge graph.
 
 **Input:**
+
 - `repo_path` (string) — path to the repository root
 - `incremental` (bool, optional) — if true, only process changed files since last ingestion
 
@@ -108,18 +116,23 @@ These are the tools the REBOOT MCP server exposes to connected agents:
 ## Internal Components
 
 ### QueryClassifier
+
 Categorizes incoming queries as **conceptual**, **procedural**, or **factual** using an LLM call. This classification drives which `SearchConfig` weight recipe is applied.
 
 ### SearchConfigSelector
+
 Maps query types to weight configurations that control how Graphiti search results are ranked. Different query types benefit from different mixes of semantic similarity, recency, and structural proximity.
 
 ### ConfidencePostRanker
+
 Applies per-node confidence multipliers to search results. Confidence scores are reinforced by positive usage signals and decay exponentially over time when nodes go unused or receive negative feedback.
 
 ### FeedbackLogger
+
 Records behavioral signals to SQLite: query reformulations, explicit thumbs-up/down, whether retrieved context was actually used. These signals drive the confidence decay/reinforcement cycle.
 
 ### Ingestion Pipeline
+
 Uses tree-sitter to parse a target codebase into function/class-level nodes and Git history to create temporal edges. These are indexed into Graphiti/Neo4j.
 
 ## Design Decisions
@@ -131,14 +144,14 @@ Uses tree-sitter to parse a target codebase into function/class-level nodes and 
 
 ## Project Phases
 
-| Phase | Dates | Focus |
-|---|---|---|
-| 0 | 1/26–2/23 | Setup & Research — Neo4j/Docker env, Graphiti research, node schema design, stub pipeline |
-| 1a | 2/16–3/9 | Core Build — Middleware: 4 REBOOT components, FastAPI service, MCP server setup |
-| 1b | 2/16–3/9 | Core Build — Ingestion: tree-sitter ingestion, index target repo in Graphiti/Neo4j |
-| 2 | 3/9–3/23 | Feedback Loop — Confidence decay/reinforcement, synthetic dataset, measurable adaptation |
-| 3 | 3/23–4/13 | Tuning & Stretch — SearchConfig weight tuning, Precision@K / MRR eval, reboot_explain tool |
-| 4 | 4/6–4/22 | Demo & Docs — Sponsor demo, Honda blog post, final documentation |
+| Phase | Dates     | Focus                                                                                      |
+| ----- | --------- | ------------------------------------------------------------------------------------------ |
+| 0     | 1/26–2/23 | Setup & Research — Neo4j/Docker env, Graphiti research, node schema design, stub pipeline  |
+| 1a    | 2/16–3/9  | Core Build — Middleware: 4 REBOOT components, FastAPI service, MCP server setup            |
+| 1b    | 2/16–3/9  | Core Build — Ingestion: tree-sitter ingestion, index target repo in Graphiti/Neo4j         |
+| 2     | 3/9–3/23  | Feedback Loop — Confidence decay/reinforcement, synthetic dataset, measurable adaptation   |
+| 3     | 3/23–4/13 | Tuning & Stretch — SearchConfig weight tuning, Precision@K / MRR eval, reboot_explain tool |
+| 4     | 4/6–4/22  | Demo & Docs — Sponsor demo, Honda blog post, final documentation                           |
 
 ## Conventions & Patterns
 
@@ -157,7 +170,10 @@ Uses tree-sitter to parse a target codebase into function/class-level nodes and 
 docker compose up neo4j -d
 
 # Start REBOOT middleware + MCP server
-pip install -r middleware/requirements.txt
+cd middleware
+pip install -r requirements.txt
+
+cd ..
 uvicorn middleware.main:app --reload --port 8000
 
 # Connect an agent to the MCP server
@@ -187,12 +203,12 @@ You have access to REBOOT, an adaptive retrieval system for this codebase.
 
 ## Key Endpoints (REST, for direct integration if needed)
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/query` | Classify query, retrieve from Graphiti, rank with confidence, return context |
-| POST | `/feedback` | Record usage signal (thumbs up/down, reformulation, context-used) |
-| GET | `/reboot-explain` | Explain last retrieval decision: scores, sources, confidence values |
-| GET | `/health` | Service health check |
-| POST | `/ingest` | Trigger codebase ingestion into knowledge graph |
+| Method | Path              | Description                                                                  |
+| ------ | ----------------- | ---------------------------------------------------------------------------- |
+| POST   | `/query`          | Classify query, retrieve from Graphiti, rank with confidence, return context |
+| POST   | `/feedback`       | Record usage signal (thumbs up/down, reformulation, context-used)            |
+| GET    | `/reboot-explain` | Explain last retrieval decision: scores, sources, confidence values          |
+| GET    | `/health`         | Service health check                                                         |
+| POST   | `/ingest`         | Trigger codebase ingestion into knowledge graph                              |
 
 These REST endpoints remain available for non-MCP integrations or direct testing. The MCP tools call into the same underlying logic.

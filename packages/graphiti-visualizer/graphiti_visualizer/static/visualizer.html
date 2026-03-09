@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Graph</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Consolas', 'Monaco', monospace; background: #1a1a2e; color: #e0e0e0; }
+
+  #header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; background: #16213e; border-bottom: 1px solid #0f3460;
+  }
+  #header h1 { font-size: 16px; color: #e94560; }
+  #stats { font-size: 13px; color: #a0a0b0; }
+  #controls { display: flex; gap: 10px; align-items: center; }
+  #controls button, #controls select {
+    background: #0f3460; color: #e0e0e0; border: 1px solid #1a3a6a;
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 12px;
+  }
+  #controls button:hover, #controls select:hover { background: #1a4a7a; }
+  #controls button.active { background: #e94560; border-color: #e94560; }
+
+  #filter-bar {
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 20px;
+    background: #1a1a2e; border-bottom: 1px solid #0f3460; min-height: 36px;
+  }
+  .filter-chip {
+    display: flex; align-items: center; gap: 4px; padding: 3px 10px;
+    border-radius: 12px; font-size: 12px; cursor: pointer; user-select: none;
+    border: 1px solid #333;
+  }
+  .filter-chip.checked { opacity: 1; }
+  .filter-chip.unchecked { opacity: 0.4; }
+  .filter-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  #main { display: flex; height: calc(100vh - 82px); }
+  #graph-container { flex: 1; }
+  #detail-panel {
+    width: 340px; background: #16213e; border-left: 1px solid #0f3460;
+    padding: 16px; overflow-y: auto; display: none; font-size: 13px;
+    position: relative;
+  }
+  #detail-panel.open { display: block; }
+  #detail-panel h2 { font-size: 15px; color: #e94560; margin-bottom: 8px; word-break: break-word; }
+  #detail-panel .labels { color: #a0a0b0; font-size: 11px; margin-bottom: 10px; }
+  #detail-panel .summary { color: #c0c0d0; margin-bottom: 12px; line-height: 1.4; }
+  #detail-panel table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  #detail-panel td {
+    padding: 3px 6px; border-bottom: 1px solid #0f3460; font-size: 12px;
+    vertical-align: top; word-break: break-word;
+  }
+  #detail-panel td:first-child { color: #a0a0b0; white-space: nowrap; width: 35%; }
+  #detail-panel h3 { font-size: 13px; color: #e94560; margin: 10px 0 6px; }
+  #detail-panel ul { list-style: none; }
+  #detail-panel li {
+    padding: 4px 0; border-bottom: 1px solid #0f3460; font-size: 12px; cursor: pointer;
+  }
+  #detail-panel li:hover { color: #e94560; }
+  #detail-close {
+    position: absolute; top: 8px; right: 8px; background: none; border: none;
+    color: #a0a0b0; cursor: pointer; font-size: 16px;
+  }
+  #detail-close:hover { color: #e94560; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Knowledge Graph</h1>
+  <div id="stats">Loading...</div>
+  <div id="controls">
+    <button id="btn-pause">Pause</button>
+    <select id="sel-interval">
+      <option value="2000">2s</option>
+      <option value="5000" selected>5s</option>
+      <option value="10000">10s</option>
+      <option value="30000">30s</option>
+    </select>
+    <button id="btn-fit">Fit</button>
+  </div>
+</div>
+
+<div id="filter-bar"></div>
+
+<div id="main">
+  <div id="graph-container"></div>
+  <div id="detail-panel">
+    <button id="detail-close">&times;</button>
+    <div id="detail-content"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var nodesDS = new vis.DataSet();
+  var edgesDS = new vis.DataSet();
+
+  var container = document.getElementById('graph-container');
+  var network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+    nodes: {
+      shape: 'dot', size: 14,
+      font: { size: 12, face: 'Consolas, Monaco, monospace', color: '#e0e0e0' },
+      borderWidth: 1.5,
+      shadow: { enabled: true, size: 4, color: 'rgba(0,0,0,0.3)' }
+    },
+    edges: {
+      arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+      font: { size: 9, face: 'Consolas, Monaco, monospace', color: '#a0a0b0', align: 'middle' },
+      color: { color: '#334', highlight: '#e94560', opacity: 0.6 },
+      smooth: { type: 'continuous' }
+    },
+    physics: {
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.008, springLength: 120 },
+      stabilization: { iterations: 120 }
+    },
+    interaction: { hover: true, tooltipDelay: 200 },
+    groups: {}
+  });
+
+  var colorMap = {};
+  var filterState = {};
+  var pollTimer = null;
+  var paused = false;
+  var previousNodeIds = new Set();
+
+  /* ---- Polling ---- */
+
+  function fetchGraph() {
+    var checkedLabels = Object.keys(filterState).filter(function(k) { return filterState[k]; });
+    var params = new URLSearchParams({ limit: '500' });
+    if (checkedLabels.length > 0) params.set('labels', checkedLabels.join(','));
+
+    return fetch('/api/graph?' + params)
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        Object.assign(colorMap, data.colorMap || {});
+        applyGroupColors();
+
+        var incomingNodeIds = new Set(data.nodes.map(function(n) { return n.id; }));
+        var incomingEdgeIds = new Set(data.edges.map(function(e) { return e.id; }));
+        var existingNodeIds = new Set(nodesDS.getIds());
+        var existingEdgeIds = new Set(edgesDS.getIds());
+
+        var toAdd = data.nodes.filter(function(n) { return !existingNodeIds.has(n.id); });
+        var toUpdate = data.nodes.filter(function(n) { return existingNodeIds.has(n.id); });
+        var toRemove = Array.from(existingNodeIds).filter(function(id) { return !incomingNodeIds.has(id); });
+
+        var isFirstLoad = previousNodeIds.size === 0;
+        toAdd.forEach(function(n) {
+          n.color = { background: colorMap[n.group] || '#999', border: isFirstLoad ? undefined : '#e94560' };
+          n.borderWidth = isFirstLoad ? 1.5 : 4;
+          if (!isFirstLoad) n.shapeProperties = { borderDashes: [5, 5] };
+        });
+
+        if (toAdd.length > 0) nodesDS.add(toAdd);
+        if (toUpdate.length > 0) {
+          toUpdate.forEach(function(n) { n.color = { background: colorMap[n.group] || '#999' }; });
+          nodesDS.update(toUpdate);
+        }
+        if (toRemove.length > 0) nodesDS.remove(toRemove);
+
+        if (!isFirstLoad && toAdd.length > 0) {
+          var newIds = toAdd.map(function(n) { return n.id; });
+          setTimeout(function() {
+            newIds.forEach(function(id) {
+              if (nodesDS.get(id)) {
+                nodesDS.update({ id: id, borderWidth: 1.5, shapeProperties: { borderDashes: false } });
+              }
+            });
+          }, 8000);
+        }
+
+        var edgesToAdd = data.edges.filter(function(e) { return !existingEdgeIds.has(e.id); });
+        var edgesToUpdate = data.edges.filter(function(e) { return existingEdgeIds.has(e.id); });
+        var edgesToRemove = Array.from(existingEdgeIds).filter(function(id) { return !incomingEdgeIds.has(id); });
+
+        if (edgesToAdd.length > 0) edgesDS.add(edgesToAdd);
+        if (edgesToUpdate.length > 0) edgesDS.update(edgesToUpdate);
+        if (edgesToRemove.length > 0) edgesDS.remove(edgesToRemove);
+
+        previousNodeIds = incomingNodeIds;
+        document.getElementById('stats').textContent =
+          data.nodes.length + ' nodes, ' + data.edges.length + ' edges';
+      });
+  }
+
+  function applyGroupColors() {
+    var groups = {};
+    Object.keys(colorMap).forEach(function(label) {
+      groups[label] = { color: { background: colorMap[label], border: colorMap[label] } };
+    });
+    network.setOptions({ groups: groups });
+  }
+
+  function startPolling() {
+    var interval = parseInt(document.getElementById('sel-interval').value, 10);
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(function() { if (!paused) fetchGraph(); }, interval);
+  }
+
+  /* ---- Filters ---- */
+
+  function initFilters() {
+    return fetch('/api/graph/labels')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        Object.assign(colorMap, data.colorMap || {});
+        var defaultUnchecked = new Set(data.defaultUnchecked || []);
+
+        var bar = document.getElementById('filter-bar');
+        bar.innerHTML = '';
+        data.labels.forEach(function(label) {
+          var checked = !defaultUnchecked.has(label);
+          filterState[label] = checked;
+
+          var chip = document.createElement('div');
+          chip.className = 'filter-chip ' + (checked ? 'checked' : 'unchecked');
+          chip.innerHTML =
+            '<span class="filter-dot" style="background:' + (colorMap[label] || '#999') + '"></span>' +
+            '<span>' + label + '</span>';
+          chip.addEventListener('click', function() {
+            filterState[label] = !filterState[label];
+            chip.className = 'filter-chip ' + (filterState[label] ? 'checked' : 'unchecked');
+            previousNodeIds = new Set();
+            fetchGraph();
+          });
+          bar.appendChild(chip);
+        });
+      });
+  }
+
+  /* ---- Detail panel ---- */
+
+  network.on('click', function(params) {
+    if (params.nodes.length === 0) { closeDetail(); return; }
+    var uuid = params.nodes[0];
+    fetch('/api/graph/node/' + encodeURIComponent(uuid))
+      .then(function(resp) { return resp.json(); })
+      .then(function(detail) { if (!detail.error) showDetail(detail); });
+  });
+
+  document.getElementById('detail-close').addEventListener('click', closeDetail);
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDetail(); });
+
+  function showDetail(d) {
+    var panel = document.getElementById('detail-panel');
+    var content = document.getElementById('detail-content');
+
+    var attrRows = '';
+    if (d.attributes) {
+      Object.keys(d.attributes).forEach(function(k) {
+        var v = d.attributes[k];
+        if (v === null || v === undefined || v === '') return;
+        var display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        attrRows += '<tr><td>' + esc(k) + '</td><td>' + esc(display) + '</td></tr>';
+      });
+    }
+
+    var connHtml = '';
+    if (d.connections && d.connections.length > 0) {
+      connHtml = '<h3>Connections (' + d.connections.length + ')</h3><ul>';
+      d.connections.forEach(function(c) {
+        var arrow = c.direction === 'outgoing' ? '&rarr;' : '&larr;';
+        connHtml += '<li data-uuid="' + esc(c.connectedUuid) + '">' +
+          arrow + ' <b>' + esc(c.edgeName) + '</b> &mdash; ' + esc(c.connectedName || c.connectedUuid) +
+          '</li>';
+      });
+      connHtml += '</ul>';
+    }
+
+    content.innerHTML =
+      '<h2>' + esc(d.name || d.uuid) + '</h2>' +
+      '<div class="labels">' + (d.labels || []).join(', ') + '</div>' +
+      (d.summary ? '<div class="summary">' + esc(d.summary) + '</div>' : '') +
+      '<table>' +
+      '<tr><td>UUID</td><td>' + esc(d.uuid) + '</td></tr>' +
+      '<tr><td>Created</td><td>' + esc(String(d.created_at || '')) + '</td></tr>' +
+      attrRows +
+      '</table>' +
+      connHtml;
+
+    content.querySelectorAll('li[data-uuid]').forEach(function(li) {
+      li.addEventListener('click', function() {
+        var targetUuid = li.getAttribute('data-uuid');
+        network.selectNodes([targetUuid]);
+        network.focus(targetUuid, { scale: 1.2, animation: true });
+        fetch('/api/graph/node/' + encodeURIComponent(targetUuid))
+          .then(function(r) { return r.json(); })
+          .then(function(detail) { if (!detail.error) showDetail(detail); });
+      });
+    });
+
+    panel.classList.add('open');
+  }
+
+  function closeDetail() {
+    document.getElementById('detail-panel').classList.remove('open');
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  /* ---- Controls ---- */
+
+  document.getElementById('btn-pause').addEventListener('click', function() {
+    paused = !paused;
+    this.textContent = paused ? 'Resume' : 'Pause';
+    this.classList.toggle('active', paused);
+  });
+
+  document.getElementById('sel-interval').addEventListener('change', startPolling);
+
+  document.getElementById('btn-fit').addEventListener('click', function() {
+    network.fit({ animation: true });
+  });
+
+  /* ---- Init ---- */
+
+  initFilters()
+    .then(function() { return fetchGraph(); })
+    .then(function() { startPolling(); });
+})();
+</script>
+</body>
+</html>
