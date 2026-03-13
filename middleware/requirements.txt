@@ -10,4 +10,4 @@ pydantic-settings
 python-dotenv
 aiosqlite
 
-../packages/graphiti-visualizer
+-e packages/graphiti-visualizer
