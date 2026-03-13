@@ -1,6 +1,13 @@
 from datetime import datetime, timezone
 
 from graphiti_core import Graphiti
+from graphiti_core.search.search_config import (
+    SearchConfig,
+    EdgeSearchConfig,
+    NodeSearchConfig,
+    EdgeSearchMethod,
+    NodeSearchMethod,
+)
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
@@ -53,7 +60,20 @@ async def close_graphiti_client() -> None:
 
 async def search_graph(query: str, num_results: int = 10) -> list[dict]:
     client = await get_graphiti_client()
-    results = await client.search(query=query, num_results=num_results)
+    config = SearchConfig(
+        edge_config=EdgeSearchConfig(
+            search_methods=[EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
+        ),
+        node_config=NodeSearchConfig(
+            search_methods=[NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
+        ),
+        limit=num_results,
+    )
+    results = await client.search_(query=query, config=config)
+
+    if isinstance(results, list):
+        return []
+
     items: list[dict] = []
 
     for node, score in zip(results.nodes, results.node_reranker_scores):
