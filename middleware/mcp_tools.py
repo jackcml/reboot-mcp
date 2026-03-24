@@ -1,6 +1,8 @@
+import json
+import logging
 import uuid
 from collections import OrderedDict
-from typing import Optional
+from typing import Any, Optional
 
 from fastmcp import FastMCP
 
@@ -22,7 +24,10 @@ from middleware.models import (
 
 mcp = FastMCP("reboot")
 
+logger = logging.getLogger(__name__)
+
 MAX_QUERY_LOG = 1000
+_MAX_LOG_CONTENT_CHARS = 4000
 
 # Shared state — set by main.py at startup
 feedback_logger: FeedbackLogger | None = None
@@ -35,6 +40,61 @@ query_log: OrderedDict[str, QueryRecord] = OrderedDict()
 def _trim_query_log() -> None:
     while len(query_log) > MAX_QUERY_LOG:
         query_log.popitem(last=False)
+
+
+def _truncate_for_log(text: str, max_chars: int = _MAX_LOG_CONTENT_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 20]}\n... [{len(text) - max_chars + 20} more chars truncated]"
+
+
+def _log_reboot_search_report(
+    *,
+    query_id: str,
+    query: str,
+    file_context: Optional[str],
+    query_type: QueryType,
+    weights: dict[str, float],
+    raw_results: list[dict[str, Any]],
+    reranked: list[SearchResultItem],
+    response_dict: dict[str, Any],
+) -> None:
+    lines: list[str] = [
+        "",
+        "=" * 72,
+        "reboot_search (MCP tool)",
+        "=" * 72,
+        f"query_id:       {query_id}",
+        f"query_type:    {query_type.value}",
+        f"file_context:  {file_context!r}",
+        f"weights:       semantic={weights['semantic']:.2f} recency={weights['recency']:.2f} structural={weights['structural']:.2f}",
+        "",
+        "query:",
+        _truncate_for_log(query, max_chars=8000),
+        "",
+        f"graph hits (pre-confidence): {len(raw_results)}",
+    ]
+    for i, r in enumerate(raw_results, start=1):
+        content = str(r.get("content", ""))
+        lines.append(
+            f"  [{i}] node_id={r.get('node_id')} score={r.get('score')} name={r.get('name')!r}"
+        )
+        lines.append(f"      content: {_truncate_for_log(content)}")
+    lines.append("")
+    lines.append(f"results returned (post-confidence rerank): {len(reranked)}")
+    for i, r in enumerate(reranked, start=1):
+        lines.append(
+            f"  [{i}] node_id={r.node_id} graph_score={r.score:.6f} confidence={r.confidence:.6f} name={r.name!r}"
+        )
+        lines.append(f"      content: {_truncate_for_log(r.content)}")
+    lines.append("")
+    lines.append("response JSON (same payload sent to MCP client):")
+    try:
+        lines.append(_truncate_for_log(json.dumps(response_dict, indent=2, default=str), max_chars=120_000))
+    except (TypeError, ValueError):
+        lines.append(_truncate_for_log(str(response_dict), max_chars=120_000))
+    lines.append("=" * 72)
+    logger.info("\n".join(lines))
 
 
 @mcp.tool()
@@ -52,6 +112,8 @@ async def reboot_search(query: str, file_context: Optional[str] = None) -> dict:
     assert search_config_selector is not None
     assert confidence_ranker is not None
     assert feedback_logger is not None
+
+    logger.info("reboot_search invoked | query_len=%d file_context=%r", len(query), file_context)
 
     query_type = await query_classifier.classify(query)
     config = search_config_selector.select(query_type)
@@ -92,7 +154,18 @@ async def reboot_search(query: str, file_context: Optional[str] = None) -> dict:
         query_type=query_type,
         results=reranked,
     )
-    return response.model_dump()
+    out = response.model_dump()
+    _log_reboot_search_report(
+        query_id=query_id,
+        query=query,
+        file_context=file_context,
+        query_type=query_type,
+        weights=weights,
+        raw_results=raw_results,
+        reranked=reranked,
+        response_dict=out,
+    )
+    return out
 
 
 @mcp.tool()
