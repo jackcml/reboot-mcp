@@ -6,6 +6,7 @@ from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 from graphiti_core.utils.bulk_utils import RawEpisode
 
 from middleware.config import settings
@@ -54,7 +55,8 @@ async def close_graphiti_client() -> None:
 
 async def search_graph(query: str, num_results: int = 10) -> list[dict]:
     client = await get_graphiti_client()
-    results = await client.search(query=query, num_results=num_results)
+    search_config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+    results = await client.search_(query, config=search_config)
     items: list[dict] = []
 
     for node, score in zip(results.nodes, results.node_reranker_scores):
