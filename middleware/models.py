@@ -52,6 +52,7 @@ class ExplainResponse(BaseModel):
 class IngestRequest(BaseModel):
     repo_path: str
     incremental: bool = False
+    verbose: bool = False
 
 
 class IngestStatus(BaseModel):

@@ -30,6 +30,7 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".eggs", "d
 
 INGEST_STATE_FILE = Path(__file__).parent / "ingest_state.json"
 INGEST_JOBS: dict[str, dict] = {}
+INGEST_TASKS: dict[str, asyncio.Task] = {}
 
 
 @dataclass
@@ -108,6 +109,19 @@ def _update_job(job_id: str, **kwargs) -> None:
 
 def get_ingest_job_status(job_id: str) -> Optional[dict]:
     return INGEST_JOBS.get(job_id)
+
+
+def cancel_ingest_job(job_id: str) -> bool:
+    task = INGEST_TASKS.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        _update_job(job_id, stage="cancelled", message="Ingest job cancelled by user")
+        return True
+    return False
+
+
+def set_ingest_task(job_id: str, task: asyncio.Task) -> None:
+    INGEST_TASKS[job_id] = task
 
 
 class CodeParser:
@@ -328,12 +342,16 @@ async def ingest_to_graph(
     incremental: bool = False,
     use_bulk_first: bool = True,
     job_id: Optional[str] = None,
+    verbose: bool = False,
 ) -> dict:
     if job_id:
         _init_job(job_id, repo_path, incremental)
 
     start_time = datetime.now(timezone.utc)
     try:
+        if verbose:
+            print(f"[INGEST {job_id}] Starting ingest for repo: {repo_path}, incremental: {incremental}")
+
         repo_state = _get_repo_state(repo_path)
         previous_file_state = repo_state.get("files", {})
 
@@ -351,6 +369,9 @@ async def ingest_to_graph(
         num_files = len(current_file_state)
         num_removed = len(removed_files)
 
+        if verbose:
+            print(f"[INGEST {job_id}] Scanned {num_files} files, {len(code_nodes)} nodes to process")
+
         if job_id:
             _update_job(
                 job_id,
@@ -361,6 +382,19 @@ async def ingest_to_graph(
                 processed_nodes=0,
                 message=f"Ingesting {len(code_nodes)} nodes (removed {num_removed} files)",
             )
+
+        # Start progress printer if verbose
+        progress_printer_task = None
+        if verbose and job_id:
+            async def _progress_printer():
+                while True:
+                    await asyncio.sleep(30)
+                    status = get_ingest_job_status(job_id)
+                    if status and status.get("stage") in ("completed", "failed", "cancelled"):
+                        break
+                    if status:
+                        print(f"[INGEST {job_id}] Progress: {status.get('processed_nodes', 0)}/{status.get('total_nodes', 0)} nodes, stage: {status.get('stage')}")
+            progress_printer_task = asyncio.create_task(_progress_printer())
 
         episodes_added = 0
         graph_empty = await is_graph_empty()
@@ -417,6 +451,10 @@ async def ingest_to_graph(
         _set_repo_state(repo_path, current_file_state)
 
         end_time = datetime.now(timezone.utc)
+        if verbose:
+            print(f"[INGEST {job_id}] Completed in {(end_time - start_time).total_seconds():.2f}s, {episodes_added} episodes added")
+        if progress_printer_task:
+            progress_printer_task.cancel()
         if job_id:
             _update_job(
                 job_id,
@@ -435,6 +473,10 @@ async def ingest_to_graph(
         }
     except Exception as exc:
         end_time = datetime.now(timezone.utc)
+        if verbose:
+            print(f"[INGEST {job_id}] Failed: {str(exc)}")
+        if progress_printer_task:
+            progress_printer_task.cancel()
         if job_id:
             _update_job(
                 job_id,

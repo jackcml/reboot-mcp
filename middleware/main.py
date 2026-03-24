@@ -96,12 +96,18 @@ async def ingest_endpoint(request: IngestRequest):
     return await mcp_tools.reboot_ingest(
         repo_path=request.repo_path,
         incremental=request.incremental,
+        verbose=request.verbose,
     )
 
 
 @app.get("/ingest-status/{job_id}")
 async def ingest_status(job_id: str):
     return await mcp_tools.reboot_ingest_status(job_id)
+
+
+@app.post("/ingest-cancel/{job_id}")
+async def ingest_cancel(job_id: str):
+    return await mcp_tools.reboot_ingest_cancel(job_id)
 
 
 if __name__ == "__main__":
