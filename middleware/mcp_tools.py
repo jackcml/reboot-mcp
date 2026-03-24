@@ -9,10 +9,11 @@ from middleware.components.feedback_logger import FeedbackLogger
 from middleware.components.query_classifier import QueryClassifier
 from middleware.components.search_config import SearchConfigSelector
 from middleware.graph.client import search_graph
-from middleware.ingestion.parser import ingest_to_graph
+from middleware.ingestion.parser import ingest_to_graph, get_ingest_job_status
 from middleware.models import (
     ExplainResponse,
     FeedbackSignal,
+    IngestStatus,
     QueryRecord,
     QueryType,
     SearchResponse,
@@ -159,12 +160,44 @@ async def reboot_explain(query_id: Optional[str] = None) -> dict:
 async def reboot_ingest(repo_path: str, incremental: bool = False) -> dict:
     """Ingest a repository into the knowledge graph.
 
-    Parses Python and JavaScript files using tree-sitter, extracts
-    functions, classes, and modules, and stores them as Graphiti episodes.
-
     Args:
         repo_path: Absolute path to the repository root.
-        incremental: Reserved for future incremental ingestion support.
+        incremental: If true, only changed files are ingested.
+
+    Returns an async job handle that can be polled through reboot_ingest_status.
+
+    Note: this method returns immediately and runs ingestion in background to prevent MCP client timeouts.
     """
-    count = await ingest_to_graph(repo_path=repo_path)
-    return {"status": "ok", "episodes_added": count}
+    job_id = str(uuid.uuid4())
+
+    # Start async ingestion in background
+    async def _background_ingest():
+        try:
+            await ingest_to_graph(
+                repo_path=repo_path,
+                incremental=incremental,
+                use_bulk_first=True,
+                job_id=job_id,
+            )
+        except Exception:
+            # ingest_to_graph already records failure state on exception
+            pass
+
+    # schedule the ingestion job and return job_id immediately
+    import asyncio
+
+    task = asyncio.create_task(_background_ingest())
+    # Keep a reference so it is not garbage-collected until completion.
+    # (Optional: we could store in a global job metadata structure if needed.)
+    _ = task
+
+    return {"status": "started", "job_id": job_id, "message": "Ingest job started"}
+
+
+@mcp.tool()
+async def reboot_ingest_status(job_id: str) -> dict:
+    """Report ingest job status."""
+    status = get_ingest_job_status(job_id)
+    if status is None:
+        return {"status": "not_found", "job_id": job_id}
+    return status

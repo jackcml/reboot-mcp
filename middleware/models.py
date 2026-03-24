@@ -54,6 +54,23 @@ class IngestRequest(BaseModel):
     incremental: bool = False
 
 
+class IngestStatus(BaseModel):
+    job_id: str
+    repo_path: str
+    incremental: bool
+    stage: str
+    total_files: int
+    processed_files: int
+    total_nodes: int
+    processed_nodes: int
+    episodes_added: int
+    start_time: str
+    end_time: Optional[str] = None
+    last_update: str
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
 class QueryRecord(BaseModel):
     query_id: str
     query: str

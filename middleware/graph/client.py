@@ -1,18 +1,12 @@
 from datetime import datetime, timezone
 
 from graphiti_core import Graphiti
-from graphiti_core.search.search_config import (
-    SearchConfig,
-    EdgeSearchConfig,
-    NodeSearchConfig,
-    EdgeSearchMethod,
-    NodeSearchMethod,
-)
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.utils.bulk_utils import RawEpisode
 
 from middleware.config import settings
 from middleware.graph.schemas import CodeClass, CodeFunction, CodeModule
@@ -60,20 +54,7 @@ async def close_graphiti_client() -> None:
 
 async def search_graph(query: str, num_results: int = 10) -> list[dict]:
     client = await get_graphiti_client()
-    config = SearchConfig(
-        edge_config=EdgeSearchConfig(
-            search_methods=[EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
-        ),
-        node_config=NodeSearchConfig(
-            search_methods=[NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
-        ),
-        limit=num_results,
-    )
-    results = await client.search_(query=query, config=config)
-
-    if isinstance(results, list):
-        return []
-
+    results = await client.search(query=query, num_results=num_results)
     items: list[dict] = []
 
     for node, score in zip(results.nodes, results.node_reranker_scores):
@@ -98,6 +79,58 @@ async def search_graph(query: str, num_results: int = 10) -> list[dict]:
 
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:num_results]
+
+
+async def is_graph_empty() -> bool:
+    client = await get_graphiti_client()
+    # Direct cypher query gives fastest way to confirm empty graph.
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (n) RETURN count(n) as c"
+    )
+    if not records:
+        return True
+    count = records[0].get("c") if isinstance(records[0], dict) else records[0]["c"]
+    return int(count) == 0
+
+
+async def add_code_episodes_bulk(code_nodes: list, group_id: str | None = None) -> int:
+    client = await get_graphiti_client()
+    raw_episodes: list[RawEpisode] = []
+
+    for cn in code_nodes:
+        body_parts = [f"kind: {cn.kind}", f"name: {cn.name}", f"file: {cn.file_path}"]
+        if cn.signature:
+            body_parts.append(f"signature: {cn.signature}")
+        if cn.docstring:
+            body_parts.append(f"docstring: {cn.docstring}")
+        if cn.methods:
+            body_parts.append(f"methods: {', '.join(cn.methods)}")
+        if cn.imports:
+            body_parts.append(f"imports: {'; '.join(cn.imports)}")
+        body_parts.append(f"lines: {cn.start_line}-{cn.end_line}")
+        if cn.source:
+            body_parts.append(f"source:\n{cn.source}")
+
+        raw_episodes.append(
+            RawEpisode(
+                name=f"{cn.kind}:{cn.name}",
+                content="\n".join(body_parts),
+                source=EpisodeType.text,
+                source_description=f"{cn.language} {cn.kind} from {cn.file_path}",
+                reference_time=datetime.now(timezone.utc),
+            )
+        )
+
+    if not raw_episodes:
+        return 0
+
+    await client.add_episode_bulk(
+        raw_episodes,
+        group_id=group_id,
+        entity_types=ENTITY_TYPES,
+    )
+    return len(raw_episodes)
+
 
 
 async def add_code_episode(

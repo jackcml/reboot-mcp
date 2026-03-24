@@ -99,5 +99,10 @@ async def ingest_endpoint(request: IngestRequest):
     )
 
 
+@app.get("/ingest-status/{job_id}")
+async def ingest_status(job_id: str):
+    return await mcp_tools.reboot_ingest_status(job_id)
+
+
 if __name__ == "__main__":
     uvicorn.run("middleware.main:app", host="0.0.0.0", port=settings.server_port, reload=True)
