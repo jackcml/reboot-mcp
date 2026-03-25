@@ -19,6 +19,22 @@ Feedback on retrieval (`reboot_feedback`) — call it often.** After any reply w
 
 Always prefer `reboot_search` over manually grepping or reading files when the user asks a question about how the codebase works, where something is defined, or why something was built a certain way. Manual file reads are still appropriate for targeted edits after you already know which file to change.
 
+### MANDATORY Feedback Logging
+
+Whenever the user comments on, evaluates, corrects, praises, rejects, or complains about any previous answer, MCP tool result, code suggestion, explanation, or diagnosis, you MUST call /feedback before responding normally.
+
+This includes positive, negative, and neutral feedback such as:
+- Positive feedback: “that was helpful”
+- Negative feedback: “that’s wrong”
+- Outcome reports: “this worked”, “this didn’t work”
+- Corrections/completeness: “you missed X”
+- Request mismatch: “not what I asked”
+- More specific correction about details of a response
+
+If a user message contains both feedback and a new request, call /feedback for the feedback first, then address the new request.
+
+Do not treat conversational acknowledgment as a substitute for /feedback. When unsure whether something counts as feedback, log it.
+
 ## Editing constraints
 - Default to ASCII when editing or creating files. Only introduce non-ASCII or other Unicode characters when there is a clear justification and the file already uses them.
 - Only add comments if they are necessary to make a non-obvious block easier to understand.
