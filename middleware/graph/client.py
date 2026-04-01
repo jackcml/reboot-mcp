@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import struct
 
 from graphiti_core import Graphiti
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
@@ -6,10 +7,21 @@ from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.search.search_config_recipes import (
+    EdgeReranker,
+    EdgeSearchConfig,
+    EdgeSearchMethod,
+    NodeReranker,
+    NodeSearchConfig,
+    NodeSearchMethod,
+    SearchConfig as GraphitiSearchConfig
+)
+
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 from graphiti_core.utils.bulk_utils import RawEpisode
 
 from middleware.config import settings
+from middleware.components.search_config import SearchConfig as RebootSearchConfig
 from middleware.graph.schemas import CodeClass, CodeFunction, CodeModule
 
 _client: Graphiti | None = None
@@ -52,10 +64,71 @@ async def close_graphiti_client() -> None:
         await _client.close()
         _client = None
 
+def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSearchConfig:
+    # BFS traverses graph edges to find structurally related nodes — only worth the cost when structural weight is meaningful
+    node_methods = [NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
+    edge_methods = [EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
 
-async def search_graph(query: str, num_results: int = 10) -> list[dict]:
+    if config.structural_weight >= 0.3:
+        node_methods.append(NodeSearchMethod.bfs)
+        edge_methods.append(EdgeSearchMethod.bfs)
+    
+    dominant = max(
+        ("semantic", config.semantic_weight),
+        ("structural", config.structural_weight),
+        ("recency", config.recency_weight),
+        key=lambda x: x[1],
+    )[0]
+
+    if dominant == "recency":
+        node_reranker = NodeReranker.episode_mentions
+        edge_reranker = EdgeReranker.episode_mentions
+    elif dominant == "structural":
+        node_reranker = NodeReranker.node_distance
+        edge_reranker = EdgeReranker.node_distance
+    else:
+        node_reranker = NodeReranker.rrf
+        edge_reranker = EdgeReranker.rrf
+
+    # sim_min_score: high semantic weight → lower threshold (wider semantic net);                                             
+    # high factual/recency → higher threshold (tighter exact-match filter). 
+    sim_min_score = round(0.7 - (0.2 * config.semantic_weight), 2)
+
+    # bfs_max_depth scales with structural weight: 0.2 → depth 1, 0.5 → depth 3, 1.0 → depth 5
+    bfs_max_depth = max(1, round(config.structural_weight * 5))
+
+    return GraphitiSearchConfig(
+        node_config=NodeSearchConfig(
+            search_methods=node_methods,
+            reranker=node_reranker,
+            sim_min_score=sim_min_score,
+            bfs_max_depth=bfs_max_depth,
+        ),
+        edge_config=EdgeSearchConfig(
+            search_methods=edge_methods,
+            reranker=edge_reranker,
+            sim_min_score=sim_min_score,
+            bfs_max_depth=bfs_max_depth,
+        ),
+        limit=limit,
+    )
+
+async def search_graph(
+    query: str,
+    config: RebootSearchConfig | None = None,
+    semantic_weight: float | None = None,
+    recency_weight: float | None = None,
+    structural_weight: float | None = None,
+    num_results: int = 10,
+) -> list[dict]:
+
     client = await get_graphiti_client()
-    search_config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+
+    if semantic_weight is not None and recency_weight is not None and structural_weight is not None:
+        search_config = _build_graphiti_config(semantic_weight, recency_weight, structural_weight, num_results)
+    else:
+        search_config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+
     results = await client.search_(query, config=search_config)
     items: list[dict] = []
 
