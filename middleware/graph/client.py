@@ -67,7 +67,7 @@ def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSea
     node_methods = [NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
     edge_methods = [EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
 
-    if config.structural_weight >= 0.3:
+    if config.structural_weight > 0.3:
         node_methods.append(NodeSearchMethod.bfs)
         edge_methods.append(EdgeSearchMethod.bfs)
     

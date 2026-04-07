@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 
 
 class QueryType(str, Enum):
-    conceptual = "conceptual"
+    architectural = "architectural"
+    explanatory = "explanatory"
     procedural = "procedural"
     factual = "factual"
     debugging = "debugging"

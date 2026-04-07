@@ -29,13 +29,14 @@ _DEBUG_SIGNALS = (
 )
                                                                                                                                 
 SYSTEM_PROMPT = """You are a query classifier for a code search system.
-Given a user query about code, classify it as exactly one of:                                                                     
-- conceptual: asks about design, architecture, purpose, or "why" questions                                                        
-- procedural: asks about how to do something, step-by-step processes, or workflows                                                
-- factual: asks for specific facts, definitions, locations, or "what/where" questions                                             
-- debugging: asks about errors, failures, stack traces, or why something is broken                                                
-                                                                                                                                
-Respond with exactly one word: conceptual, procedural, factual, or debugging."""                                                  
+Given a user query about code, classify it as exactly one of:
+- architectural: asks about project/module-level structure, organization, or design ("how is X organized?", "what does this project do?", "how do these modules relate?")
+- explanatory: asks about what specific code does, how a function/class works, or what a pattern means ("what does this function do?", "explain this class", "how does X work?")
+- procedural: asks about how to do something, step-by-step processes, or workflows ("how do I add X?", "what's the pattern for Y?")
+- factual: asks for specific facts, definitions, locations, or "what/where" questions ("where is X defined?", "what is the return type of Y?")
+- debugging: asks about errors, failures, stack traces, or why something is broken
+
+Respond with exactly one word: architectural, explanatory, procedural, factual, or debugging."""                                                  
                 
                                                                                                                                 
 class QueryClassifier:
