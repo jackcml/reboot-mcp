@@ -8,6 +8,7 @@ class QueryType(str, Enum):
     conceptual = "conceptual"
     procedural = "procedural"
     factual = "factual"
+    debugging = "debugging"
 
 
 class SearchRequest(BaseModel):
