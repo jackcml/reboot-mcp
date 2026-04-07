@@ -118,7 +118,7 @@ async def reboot_search(query: str, file_context: Optional[str] = None) -> dict:
     query_type = await query_classifier.classify(query)
     config = search_config_selector.select(query_type)
 
-    raw_results = await search_graph(query, config=config)
+    raw_results = await search_graph(query, config=config, file_context=file_context)
 
     result_items = [
         SearchResultItem(

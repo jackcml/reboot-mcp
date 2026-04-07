@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-import struct
 
 from graphiti_core import Graphiti
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
@@ -7,16 +6,15 @@ from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
-from graphiti_core.search.search_config_recipes import (
+from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
     EdgeSearchMethod,
     NodeReranker,
     NodeSearchConfig,
     NodeSearchMethod,
-    SearchConfig as GraphitiSearchConfig
+    SearchConfig as GraphitiSearchConfig,
 )
-
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 from graphiti_core.utils.bulk_utils import RawEpisode
 
@@ -113,23 +111,38 @@ def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSea
         limit=limit,
     )
 
+async def find_center_node_uuid(file_path: str) -> str | None:
+    """Return the UUID of a graph node whose file_path matches, or None if not found."""
+    client = await get_graphiti_client()
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (n) WHERE n.file_path = $file_path RETURN n.uuid AS uuid LIMIT 1",
+        {"file_path": file_path},
+    )
+    if not records:
+        return None
+    row = records[0]
+    return row.get("uuid") if isinstance(row, dict) else row["uuid"]
+
+
 async def search_graph(
     query: str,
     config: RebootSearchConfig | None = None,
-    semantic_weight: float | None = None,
-    recency_weight: float | None = None,
-    structural_weight: float | None = None,
+    file_context: str | None = None,
     num_results: int = 10,
 ) -> list[dict]:
-
     client = await get_graphiti_client()
 
-    if semantic_weight is not None and recency_weight is not None and structural_weight is not None:
-        search_config = _build_graphiti_config(semantic_weight, recency_weight, structural_weight, num_results)
-    else:
-        search_config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+    search_config = (
+        _build_graphiti_config(config, num_results)
+        if config is not None
+        else COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+    )
 
-    results = await client.search_(query, config=search_config)
+    center_node_uuid = None
+    if file_context:
+        center_node_uuid = await find_center_node_uuid(file_context)
+
+    results = await client.search_(query, config=search_config, center_node_uuid=center_node_uuid)
     items: list[dict] = []
 
     for node, score in zip(results.nodes, results.node_reranker_scores):
