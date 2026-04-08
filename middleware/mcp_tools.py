@@ -173,6 +173,7 @@ async def reboot_search(query: str, file_context: Optional[str] = None) -> dict:
 async def reboot_feedback(
     query_id: str,
     signal: str,
+    node_ids: Optional[list[str]] = None,
     details: Optional[str] = None,
 ) -> dict:
     """Submit feedback on search results to improve future ranking.
@@ -180,26 +181,31 @@ async def reboot_feedback(
     Args:
         query_id: The query_id returned from reboot_search.
         signal: "positive" or "negative".
+        node_ids: Optional list of specific node_ids to target. If omitted, feedback applies to all results from the query.
         details: Optional free-text explanation.
     """
     assert feedback_logger is not None
 
     feedback_signal = FeedbackSignal(signal)
 
-    node_ids: list[str] = []
     record = query_log.get(query_id)
-    if record:
-        node_ids = [r.node_id for r in record.results]
+    all_node_ids = [r.node_id for r in record.results] if record else []
+
+    if node_ids:
+        valid = set(all_node_ids)
+        target_ids = [nid for nid in node_ids if nid in valid]
+    else:
+        target_ids = all_node_ids
 
     await feedback_logger.log_feedback(
         query_id=query_id,
         signal=feedback_signal,
-        node_ids=node_ids,
+        node_ids=target_ids,
         details=details,
     )
 
-    if record and feedback_signal == FeedbackSignal.positive and node_ids:
-        metrics = evaluate_query(record.results, node_ids)
+    if record and all_node_ids:
+        metrics = evaluate_query(record.results, all_node_ids)
         await feedback_logger.log_query_metrics(
             query_id=query_id,
             metrics=metrics,
@@ -209,10 +215,10 @@ async def reboot_feedback(
     else:
         metrics = None
 
-    for nid in node_ids:
+    for nid in target_ids:
         await feedback_logger.update_confidence(nid, feedback_signal)
 
-    response = {"status": "ok", "query_id": query_id, "signal": signal}
+    response = {"status": "ok", "query_id": query_id, "signal": signal, "nodes_updated": len(target_ids)}
     if metrics is not None:
         response["metrics"] = metrics
     return response
