@@ -215,8 +215,9 @@ async def reboot_feedback(
     else:
         metrics = None
 
+    rank_map = {r.node_id: i + 1 for i, r in enumerate(record.results)} if record else {}
     for nid in target_ids:
-        await feedback_logger.update_confidence(nid, feedback_signal)
+        await feedback_logger.update_confidence(nid, feedback_signal, rank=rank_map.get(nid, 1))
 
     response = {"status": "ok", "query_id": query_id, "signal": signal, "nodes_updated": len(target_ids)}
     if metrics is not None:
