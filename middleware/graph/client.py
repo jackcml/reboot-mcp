@@ -111,6 +111,22 @@ def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSea
         limit=limit,
     )
 
+async def delete_episodes_for_file(file_path: str) -> int:
+    """Delete all episodes ingested from a given file path. Returns the number of episodes deleted."""
+    client = await get_graphiti_client()
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (e:Episodic) WHERE e.source_description CONTAINS $file_path RETURN e.uuid AS uuid",
+        {"file_path": file_path},
+    )
+    uuids = [
+        (row.get("uuid") if isinstance(row, dict) else row["uuid"])
+        for row in records
+    ]
+    for episode_uuid in uuids:
+        await client.remove_episode(episode_uuid)
+    return len(uuids)
+
+
 async def find_center_node_uuid(file_path: str) -> str | None:
     """Return the UUID of a graph node whose file_path matches, or None if not found."""
     client = await get_graphiti_client()
