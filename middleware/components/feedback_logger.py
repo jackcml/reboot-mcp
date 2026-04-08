@@ -101,13 +101,14 @@ class FeedbackLogger:
         row = await cursor.fetchone()
         return row[0] if row else 1.0
 
-    async def update_confidence(self, node_id: str, signal: FeedbackSignal) -> None:
+    async def update_confidence(self, node_id: str, signal: FeedbackSignal, rank: int = 1) -> None:
         assert self._db is not None
         current = await self.get_confidence(node_id)
+        delta = 0.1 / max(rank, 1)
         if signal == FeedbackSignal.positive:
-            new_confidence = min(current * 1.1, 2.0)
+            new_confidence = min(current * (1 + delta), 2.0)
         else:
-            new_confidence = max(current * 0.9, 0.1)
+            new_confidence = max(current * (1 - delta), 0.1)
         await self._db.execute(
             """
             INSERT INTO node_confidence (node_id, confidence) VALUES (?, ?)
