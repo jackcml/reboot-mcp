@@ -11,10 +11,15 @@ class SearchConfig:
 
 
 RECIPES: dict[QueryType, SearchConfig] = {
-    QueryType.conceptual: SearchConfig(
-        semantic_weight=0.7,
+    QueryType.architectural: SearchConfig(
+        semantic_weight=0.3,
         recency_weight=0.1,
-        structural_weight=0.2,
+        structural_weight=0.6,
+    ),
+    QueryType.explanatory: SearchConfig(
+        semantic_weight=0.6,
+        recency_weight=0.1,
+        structural_weight=0.3,
     ),
     QueryType.procedural: SearchConfig(
         semantic_weight=0.3,
@@ -29,8 +34,8 @@ RECIPES: dict[QueryType, SearchConfig] = {
     QueryType.debugging: SearchConfig(
         semantic_weight=0.2,
         recency_weight=0.5,
-        structural_weight=0.3
-    )
+        structural_weight=0.3,
+    ),
 }
 
 

@@ -9,13 +9,24 @@ from graphiti_core.search.search_config import (
   )
                                                                                                                                     
    
-def test_conceptual_uses_rrf_no_bfs():                                                                                            
-    # semantic=0.7, recency=0.1, structural=0.2
-    config = SearchConfig(semantic_weight=0.7, recency_weight=0.1, structural_weight=0.2)                                         
+def test_architectural_uses_node_distance_with_bfs():
+    # semantic=0.3, recency=0.1, structural=0.6
+    config = SearchConfig(semantic_weight=0.3, recency_weight=0.1, structural_weight=0.6)
     result = _build_graphiti_config(config, limit=10)
-                                                                                                                                
+
+    assert result.node_config.reranker == NodeReranker.node_distance
+    assert result.edge_config.reranker == EdgeReranker.node_distance
+    assert NodeSearchMethod.bfs in result.node_config.search_methods
+    assert result.limit == 10
+
+
+def test_explanatory_uses_rrf_no_bfs():
+    # semantic=0.6, recency=0.1, structural=0.3
+    config = SearchConfig(semantic_weight=0.6, recency_weight=0.1, structural_weight=0.3)
+    result = _build_graphiti_config(config, limit=10)
+
     assert result.node_config.reranker == NodeReranker.rrf
-    assert result.edge_config.reranker == EdgeReranker.rrf                                                                        
+    assert result.edge_config.reranker == EdgeReranker.rrf
     assert NodeSearchMethod.bfs not in result.node_config.search_methods
     assert result.limit == 10                                                                                                     
    

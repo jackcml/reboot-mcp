@@ -84,16 +84,27 @@ async def test_heuristic_does_not_trigger_on_normal_query():
 
 
 @pytest.mark.asyncio
-async def test_heuristic_does_not_trigger_on_conceptual_query():
+async def test_heuristic_does_not_trigger_on_architectural_query():
     classifier = QueryClassifier()
     mock_response = MagicMock()
-    mock_response.choices[0].message.content = "conceptual"
+    mock_response.choices[0].message.content = "architectural"
 
     with patch.object(classifier._openai.chat.completions, "create", new=AsyncMock(return_value=mock_response)):
-        result = await classifier.classify("why was the singleton pattern chosen for the graphiti client")
+        result = await classifier.classify("how is the middleware organized across modules")
 
-    # "why was" is not in _DEBUG_SIGNALS so it goes to LLM
-    assert result == QueryType.conceptual
+    assert result == QueryType.architectural
+
+
+@pytest.mark.asyncio
+async def test_heuristic_does_not_trigger_on_explanatory_query():
+    classifier = QueryClassifier()
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = "explanatory"
+
+    with patch.object(classifier._openai.chat.completions, "create", new=AsyncMock(return_value=mock_response)):
+        result = await classifier.classify("what does the confidence ranker do")
+
+    assert result == QueryType.explanatory
 
 
 @pytest.mark.asyncio
@@ -101,7 +112,7 @@ async def test_llm_fallback_on_exception_returns_factual():
     classifier = QueryClassifier()
 
     with patch.object(classifier._openai.chat.completions, "create", new=AsyncMock(side_effect=Exception("api error"))):
-        result = await classifier.classify("what does the confidence ranker do")
+        result = await classifier.classify("what is the return type of search_graph")
 
     assert result == QueryType.factual
 
@@ -145,8 +156,14 @@ def test_debugging_recipe_is_recency_dominant():
     assert config.recency_weight > config.structural_weight
 
 
-def test_conceptual_recipe_is_semantic_dominant():
-    config = RECIPES[QueryType.conceptual]
+def test_architectural_recipe_is_structural_dominant():
+    config = RECIPES[QueryType.architectural]
+    assert config.structural_weight > config.semantic_weight
+    assert config.structural_weight > config.recency_weight
+
+
+def test_explanatory_recipe_is_semantic_dominant():
+    config = RECIPES[QueryType.explanatory]
     assert config.semantic_weight > config.recency_weight
     assert config.semantic_weight > config.structural_weight
 

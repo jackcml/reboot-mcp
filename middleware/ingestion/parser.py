@@ -17,6 +17,7 @@ from middleware.graph.client import (
     ENTITY_TYPES,
     add_code_episode,
     add_code_episodes_bulk,
+    delete_episodes_for_file,
     get_graphiti_client,
     is_graph_empty,
 )
@@ -494,11 +495,22 @@ async def ingest_to_graph(
                 if job_id:
                     _update_job(job_id, processed_nodes=episodes_added)
 
+        # Delete nodes for files removed since the last ingest
+        episodes_deleted = 0
+        if removed_files:
+            if job_id:
+                _update_job(job_id, stage="cleanup", message=f"Removing nodes for {len(removed_files)} deleted files")
+            for file_path in removed_files:
+                count = await delete_episodes_for_file(file_path)
+                episodes_deleted += count
+                if verbose:
+                    print(f"[INGEST {job_id}] Removed {count} episodes for deleted file: {file_path}")
+
         _set_repo_state(repo_path, current_file_state)
 
         end_time = datetime.now(timezone.utc)
         if verbose:
-            print(f"[INGEST {job_id}] Completed in {(end_time - start_time).total_seconds():.2f}s, {episodes_added} episodes added")
+            print(f"[INGEST {job_id}] Completed in {(end_time - start_time).total_seconds():.2f}s, {episodes_added} episodes added, {episodes_deleted} episodes deleted")
         if progress_printer_task:
             progress_printer_task.cancel()
         if job_id:
@@ -513,6 +525,7 @@ async def ingest_to_graph(
         return {
             "status": "ok",
             "episodes_added": episodes_added,
+            "episodes_deleted": episodes_deleted,
             "files_scanned": num_files,
             "files_removed": num_removed,
             "duration_seconds": (end_time - start_time).total_seconds(),

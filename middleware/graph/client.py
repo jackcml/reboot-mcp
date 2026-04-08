@@ -67,7 +67,7 @@ def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSea
     node_methods = [NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
     edge_methods = [EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
 
-    if config.structural_weight >= 0.3:
+    if config.structural_weight > 0.3:
         node_methods.append(NodeSearchMethod.bfs)
         edge_methods.append(EdgeSearchMethod.bfs)
     
@@ -167,6 +167,25 @@ async def search_graph(
 
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:num_results]
+
+
+async def delete_episodes_for_file(file_path: str) -> int:
+    """Delete all episodes ingested from a given file path and clean up orphaned nodes/edges.
+
+    Returns the number of episodes deleted.
+    """
+    client = await get_graphiti_client()
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (e:Episodic) WHERE e.source_description CONTAINS $file_path RETURN e.uuid AS uuid",
+        {"file_path": file_path},
+    )
+    uuids = [
+        (row.get("uuid") if isinstance(row, dict) else row["uuid"])
+        for row in records
+    ]
+    for episode_uuid in uuids:
+        await client.remove_episode(episode_uuid)
+    return len(uuids)
 
 
 async def is_graph_empty() -> bool:
