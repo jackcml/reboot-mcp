@@ -169,6 +169,25 @@ async def search_graph(
     return items[:num_results]
 
 
+async def delete_episodes_for_file(file_path: str) -> int:
+    """Delete all episodes ingested from a given file path and clean up orphaned nodes/edges.
+
+    Returns the number of episodes deleted.
+    """
+    client = await get_graphiti_client()
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (e:Episodic) WHERE e.source_description CONTAINS $file_path RETURN e.uuid AS uuid",
+        {"file_path": file_path},
+    )
+    uuids = [
+        (row.get("uuid") if isinstance(row, dict) else row["uuid"])
+        for row in records
+    ]
+    for episode_uuid in uuids:
+        await client.remove_episode(episode_uuid)
+    return len(uuids)
+
+
 async def is_graph_empty() -> bool:
     client = await get_graphiti_client()
     # Direct cypher query gives fastest way to confirm empty graph.
