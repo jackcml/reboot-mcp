@@ -31,6 +31,22 @@ class FeedbackLogger:
             )
             """
         )
+        await self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_id TEXT NOT NULL,
+                precision_at_1 REAL NOT NULL,
+                precision_at_3 REAL NOT NULL,
+                precision_at_5 REAL NOT NULL,
+                precision_at_10 REAL NOT NULL,
+                mrr REAL NOT NULL,
+                signal TEXT NOT NULL,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         await self._db.commit()
 
     async def close(self) -> None:
@@ -50,6 +66,29 @@ class FeedbackLogger:
         await self._db.execute(
             "INSERT INTO feedback_events (query_id, signal, node_ids, details) VALUES (?, ?, ?, ?)",
             (query_id, signal.value, ids_str, details),
+        )
+        await self._db.commit()
+
+    async def log_query_metrics(
+        self,
+        query_id: str,
+        metrics: dict[str, float],
+        signal: FeedbackSignal,
+        details: str | None = None,
+    ) -> None:
+        assert self._db is not None
+        await self._db.execute(
+            "INSERT INTO query_metrics (query_id, precision_at_1, precision_at_3, precision_at_5, precision_at_10, mrr, signal, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                query_id,
+                metrics.get("precision@1", 0.0),
+                metrics.get("precision@3", 0.0),
+                metrics.get("precision@5", 0.0),
+                metrics.get("precision@10", 0.0),
+                metrics.get("mrr", 0.0),
+                signal.value,
+                details,
+            ),
         )
         await self._db.commit()
 

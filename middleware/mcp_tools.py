@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 from middleware.components.confidence_ranker import ConfidencePostRanker
 from middleware.components.feedback_logger import FeedbackLogger
 from middleware.components.query_classifier import QueryClassifier
+from middleware.components.retrieval_metrics import evaluate_query
 from middleware.components.search_config import SearchConfigSelector
 from middleware.graph.client import search_graph
 from middleware.ingestion.parser import ingest_to_graph, get_ingest_job_status, cancel_ingest_job, set_ingest_task, cancel_ingest_job
@@ -197,10 +198,24 @@ async def reboot_feedback(
         details=details,
     )
 
+    if record and feedback_signal == FeedbackSignal.positive and node_ids:
+        metrics = evaluate_query(record.results, node_ids)
+        await feedback_logger.log_query_metrics(
+            query_id=query_id,
+            metrics=metrics,
+            signal=feedback_signal,
+            details=details,
+        )
+    else:
+        metrics = None
+
     for nid in node_ids:
         await feedback_logger.update_confidence(nid, feedback_signal)
 
-    return {"status": "ok", "query_id": query_id, "signal": signal}
+    response = {"status": "ok", "query_id": query_id, "signal": signal}
+    if metrics is not None:
+        response["metrics"] = metrics
+    return response
 
 
 @mcp.tool()
