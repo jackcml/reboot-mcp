@@ -104,6 +104,22 @@ class FeedbackLogger:
             )
             """
         )
+        await self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_id TEXT NOT NULL,
+                precision_at_1 REAL NOT NULL,
+                precision_at_3 REAL NOT NULL,
+                precision_at_5 REAL NOT NULL,
+                precision_at_10 REAL NOT NULL,
+                mrr REAL NOT NULL,
+                signal TEXT NOT NULL,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         await self._db.commit()
 
     async def _ensure_last_reinforced_column(self) -> None:

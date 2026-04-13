@@ -26,6 +26,11 @@ RECIPES: dict[QueryType, SearchConfig] = {
         recency_weight=0.5,
         structural_weight=0.2,
     ),
+    QueryType.debugging: SearchConfig(
+        semantic_weight=0.2,
+        recency_weight=0.5,
+        structural_weight=0.3
+    )
 }
 
 
