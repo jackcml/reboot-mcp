@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     sqlite_path: str = str(Path(__file__).parent / "feedback.db")
     server_port: int = 8000
+    # Lazy exponential decay: effective = stored * exp(-lambda * days_since_last_positive)
+    confidence_decay_lambda: float = 0.05
+    # Added to "now" when computing decay (demo: simulate 30 days passing without waiting)
+    demo_time_offset_days: int = 0
 
 
 settings = Settings()

@@ -27,6 +27,54 @@
     display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 20px;
     background: #1a1a2e; border-bottom: 1px solid #0f3460; min-height: 36px;
   }
+  #node-search {
+    position: relative;
+    display: flex; align-items: center;
+    margin-right: 8px;
+    min-width: 220px;
+    flex: 1 1 260px;
+    max-width: 520px;
+  }
+  #node-search input {
+    width: 100%;
+    background: #0f3460;
+    color: #e0e0e0;
+    border: 1px solid #1a3a6a;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+  #node-search input:focus {
+    border-color: #e94560;
+    box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.15);
+  }
+  #node-search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    overflow: hidden;
+    display: none;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .search-result {
+    padding: 8px 10px;
+    border-bottom: 1px solid #0f3460;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.25;
+  }
+  .search-result:last-child { border-bottom: none; }
+  .search-result:hover { background: rgba(233, 69, 96, 0.12); }
+  .search-result .title { color: #e0e0e0; font-weight: 600; }
+  .search-result .meta { color: #a0a0b0; font-size: 11px; margin-top: 2px; }
   .filter-chip {
     display: flex; align-items: center; gap: 4px; padding: 3px 10px;
     border-radius: 12px; font-size: 12px; cursor: pointer; user-select: none;
@@ -59,6 +107,9 @@
     padding: 4px 0; border-bottom: 1px solid #0f3460; font-size: 12px; cursor: pointer;
   }
   #detail-panel li:hover { color: #e94560; }
+  #detail-panel .reboot-hint { color: #888; font-size: 11px; margin: -4px 0 8px; line-height: 1.35; }
+  #detail-panel .reboot-table { margin-bottom: 14px; }
+  #detail-panel .muted { color: #888; font-weight: normal; font-size: 11px; }
   #detail-close {
     position: absolute; top: 8px; right: 8px; background: none; border: none;
     color: #a0a0b0; cursor: pointer; font-size: 16px;
@@ -213,6 +264,12 @@
 
         var bar = document.getElementById('filter-bar');
         bar.innerHTML = '';
+        var searchWrap = document.createElement('div');
+        searchWrap.id = 'node-search';
+        searchWrap.innerHTML =
+          '<input id="node-search-input" type="text" placeholder="Search nodes (name, id, type)..." autocomplete="off" />' +
+          '<div id="node-search-results"></div>';
+        bar.appendChild(searchWrap);
         data.labels.forEach(function(label) {
           var checked = !defaultUnchecked.has(label);
           filterState[label] = checked;
@@ -230,17 +287,25 @@
           });
           bar.appendChild(chip);
         });
+        initNodeSearch();
       });
   }
 
   /* ---- Detail panel ---- */
 
-  network.on('click', function(params) {
-    if (params.nodes.length === 0) { closeDetail(); return; }
-    var uuid = params.nodes[0];
+  function openNode(uuid, opts) {
+    if (!uuid) return;
+    var options = opts || {};
+    network.selectNodes([uuid]);
+    if (options.focus !== false) network.focus(uuid, { scale: 1.2, animation: true });
     fetch('/api/graph/node/' + encodeURIComponent(uuid))
       .then(function(resp) { return resp.json(); })
       .then(function(detail) { if (!detail.error) showDetail(detail); });
+  }
+
+  network.on('click', function(params) {
+    if (params.nodes.length === 0) { closeDetail(); return; }
+    openNode(params.nodes[0]);
   });
 
   document.getElementById('detail-close').addEventListener('click', closeDetail);
@@ -260,6 +325,34 @@
       });
     }
 
+    var rebootHtml = '';
+    if (d.reboot_confidence) {
+      var rc = d.reboot_confidence;
+      var eff = rc.effective != null && rc.effective !== undefined ? Number(rc.effective).toFixed(4) : '—';
+      var storedCell = rc.tracked && rc.stored != null
+        ? Number(rc.stored).toFixed(4)
+        : '<i>no SQLite row — effective uses default 1.0</i>';
+      var lastCell = rc.last_reinforced_at ? esc(String(rc.last_reinforced_at)) : '<i>none</i>';
+      var anchorCell = rc.decay_anchor_at ? esc(String(rc.decay_anchor_at)) : '<i>none</i>';
+      var refCell = rc.decay_reference_used ? esc(String(rc.decay_reference_used)) : '—';
+      var ingestCell = rc.last_ingest_completed_at ? esc(String(rc.last_ingest_completed_at)) : '<i>none</i>';
+      var lam = rc.confidence_decay_lambda != null ? String(rc.confidence_decay_lambda) : '—';
+      var off = rc.demo_time_offset_days != null ? String(rc.demo_time_offset_days) : '0';
+      rebootHtml =
+        '<h3>REBOOT confidence (SQLite)</h3>' +
+        '<p class="reboot-hint">Ranking multiplier; decay clock = first search touch, last positive, or last ingest. Not in Neo4j.</p>' +
+        '<table class="reboot-table">' +
+        '<tr><td>Effective</td><td><b>' + eff + '</b> <span class="muted">(after decay)</span></td></tr>' +
+        '<tr><td>Stored</td><td>' + storedCell + '</td></tr>' +
+        '<tr><td>Decay uses</td><td>' + refCell + '</td></tr>' +
+        '<tr><td>Decay anchor</td><td>' + anchorCell + '</td></tr>' +
+        '<tr><td>Last positive</td><td>' + lastCell + '</td></tr>' +
+        '<tr><td>Last ingest</td><td>' + ingestCell + '</td></tr>' +
+        '<tr><td>Decay λ</td><td>' + esc(lam) + '</td></tr>' +
+        '<tr><td>Demo offset (days)</td><td>' + esc(off) + '</td></tr>' +
+        '</table>';
+    }
+
     var connHtml = '';
     if (d.connections && d.connections.length > 0) {
       connHtml = '<h3>Connections (' + d.connections.length + ')</h3><ul>';
@@ -276,6 +369,7 @@
       '<h2>' + esc(d.name || d.uuid) + '</h2>' +
       '<div class="labels">' + (d.labels || []).join(', ') + '</div>' +
       (d.summary ? '<div class="summary">' + esc(d.summary) + '</div>' : '') +
+      rebootHtml +
       '<table>' +
       '<tr><td>UUID</td><td>' + esc(d.uuid) + '</td></tr>' +
       '<tr><td>Created</td><td>' + esc(String(d.created_at || '')) + '</td></tr>' +
@@ -286,11 +380,7 @@
     content.querySelectorAll('li[data-uuid]').forEach(function(li) {
       li.addEventListener('click', function() {
         var targetUuid = li.getAttribute('data-uuid');
-        network.selectNodes([targetUuid]);
-        network.focus(targetUuid, { scale: 1.2, animation: true });
-        fetch('/api/graph/node/' + encodeURIComponent(targetUuid))
-          .then(function(r) { return r.json(); })
-          .then(function(detail) { if (!detail.error) showDetail(detail); });
+        openNode(targetUuid);
       });
     });
 
@@ -305,6 +395,129 @@
     var d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+  }
+
+  /* ---- Node search ---- */
+
+  function initNodeSearch() {
+    var input = document.getElementById('node-search-input');
+    var results = document.getElementById('node-search-results');
+    if (!input || !results) return;
+
+    var debounceTimer = null;
+    var lastQuery = '';
+
+    function nodeTitle(n) {
+      return (n && (n.label || n.name || n.title || n.id)) ? String(n.label || n.name || n.title || n.id) : '';
+    }
+
+    function nodeMeta(n) {
+      var parts = [];
+      if (n && n.group) parts.push(String(n.group));
+      if (n && n.id) parts.push(String(n.id));
+      return parts.join(' • ');
+    }
+
+    function nodeHaystack(n) {
+      var t = nodeTitle(n);
+      var g = n && n.group ? String(n.group) : '';
+      var id = n && n.id ? String(n.id) : '';
+      return (t + ' ' + g + ' ' + id).toLowerCase();
+    }
+
+    function hideResults() {
+      results.style.display = 'none';
+      results.innerHTML = '';
+    }
+
+    function showMatches(q) {
+      var query = (q || '').trim().toLowerCase();
+      lastQuery = query;
+      if (!query) { hideResults(); return; }
+
+      var all = nodesDS.get();
+      var matches = [];
+      for (var i = 0; i < all.length; i++) {
+        var n = all[i];
+        if (!n) continue;
+        if (nodeHaystack(n).indexOf(query) !== -1) matches.push(n);
+      }
+
+      matches.sort(function(a, b) {
+        var at = nodeTitle(a).toLowerCase();
+        var bt = nodeTitle(b).toLowerCase();
+        var ai = at.indexOf(query);
+        var bi = bt.indexOf(query);
+        if (ai !== bi) return ai - bi;
+        return at.localeCompare(bt);
+      });
+
+      matches = matches.slice(0, 30);
+      if (matches.length === 0) {
+        results.innerHTML = '<div class="search-result"><div class="title">No matches</div><div class="meta">Try a shorter query</div></div>';
+        results.style.display = 'block';
+        return;
+      }
+
+      results.innerHTML = matches.map(function(n) {
+        var title = esc(nodeTitle(n) || '(unnamed)');
+        var meta = esc(nodeMeta(n) || '');
+        return '<div class="search-result" data-uuid="' + esc(String(n.id)) + '">' +
+          '<div class="title">' + title + '</div>' +
+          (meta ? '<div class="meta">' + meta + '</div>' : '') +
+          '</div>';
+      }).join('');
+
+      results.querySelectorAll('.search-result[data-uuid]').forEach(function(el) {
+        el.addEventListener('mousedown', function(e) {
+          // Prevent input blur from hiding the results before we handle selection
+          e.preventDefault();
+          var uuid = el.getAttribute('data-uuid');
+          hideResults();
+          input.blur();
+          openNode(uuid);
+        });
+      });
+
+      results.style.display = 'block';
+    }
+
+    input.addEventListener('input', function() {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() { showMatches(input.value); }, 80);
+    });
+
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        input.value = '';
+        hideResults();
+        return;
+      }
+      if (e.key === 'Enter') {
+        var first = results.querySelector('.search-result[data-uuid]');
+        if (first) {
+          e.preventDefault();
+          var uuid = first.getAttribute('data-uuid');
+          hideResults();
+          openNode(uuid);
+        }
+      }
+    });
+
+    input.addEventListener('focus', function() {
+      if (lastQuery && input.value.trim()) showMatches(input.value);
+    });
+
+    input.addEventListener('blur', function() {
+      setTimeout(function() { hideResults(); }, 120);
+    });
+
+    document.addEventListener('click', function(e) {
+      var wrap = document.getElementById('node-search');
+      if (!wrap) return;
+      if (e.target === input || (results && results.contains(e.target))) return;
+      hideResults();
+    });
   }
 
   /* ---- Controls ---- */

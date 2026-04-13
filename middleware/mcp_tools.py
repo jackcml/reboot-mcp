@@ -121,6 +121,9 @@ async def reboot_search(query: str, file_context: Optional[str] = None) -> dict:
 
     raw_results = await search_graph(query, config=config, file_context=file_context)
 
+    seen_ids = [r["node_id"] for r in raw_results if r.get("node_id")]
+    await feedback_logger.touch_nodes_seen_in_results(seen_ids)
+
     result_items = [
         SearchResultItem(
             node_id=r["node_id"],
@@ -274,6 +277,7 @@ async def reboot_ingest(repo_path: str, incremental: bool = False, verbose: bool
                 use_bulk_first=True,
                 job_id=job_id,
                 verbose=verbose,
+                feedback_logger=feedback_logger,
             )
         except Exception:
             # ingest_to_graph already records failure state on exception
