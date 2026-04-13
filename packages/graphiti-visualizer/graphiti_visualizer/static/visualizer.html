@@ -270,16 +270,22 @@
       var storedCell = rc.tracked && rc.stored != null
         ? Number(rc.stored).toFixed(4)
         : '<i>no SQLite row — effective uses default 1.0</i>';
-      var lastCell = rc.last_reinforced_at ? esc(String(rc.last_reinforced_at)) : '<i>none (no time decay until first positive feedback)</i>';
+      var lastCell = rc.last_reinforced_at ? esc(String(rc.last_reinforced_at)) : '<i>none</i>';
+      var anchorCell = rc.decay_anchor_at ? esc(String(rc.decay_anchor_at)) : '<i>none</i>';
+      var refCell = rc.decay_reference_used ? esc(String(rc.decay_reference_used)) : '—';
+      var ingestCell = rc.last_ingest_completed_at ? esc(String(rc.last_ingest_completed_at)) : '<i>none</i>';
       var lam = rc.confidence_decay_lambda != null ? String(rc.confidence_decay_lambda) : '—';
       var off = rc.demo_time_offset_days != null ? String(rc.demo_time_offset_days) : '0';
       rebootHtml =
         '<h3>REBOOT confidence (SQLite)</h3>' +
-        '<p class="reboot-hint">Values used when ranking search hits. Not stored in Neo4j.</p>' +
+        '<p class="reboot-hint">Ranking multiplier; decay clock = first search touch, last positive, or last ingest. Not in Neo4j.</p>' +
         '<table class="reboot-table">' +
         '<tr><td>Effective</td><td><b>' + eff + '</b> <span class="muted">(after decay)</span></td></tr>' +
         '<tr><td>Stored</td><td>' + storedCell + '</td></tr>' +
+        '<tr><td>Decay uses</td><td>' + refCell + '</td></tr>' +
+        '<tr><td>Decay anchor</td><td>' + anchorCell + '</td></tr>' +
         '<tr><td>Last positive</td><td>' + lastCell + '</td></tr>' +
+        '<tr><td>Last ingest</td><td>' + ingestCell + '</td></tr>' +
         '<tr><td>Decay λ</td><td>' + esc(lam) + '</td></tr>' +
         '<tr><td>Demo offset (days)</td><td>' + esc(off) + '</td></tr>' +
         '</table>';

@@ -9,6 +9,7 @@ from middleware.config import settings
 from middleware.models import FeedbackSignal
 
 _CONFIDENCE_FLOOR = 0.1
+_INGEST_META_KEY = "last_ingest_completed_at"
 
 
 def _utc_now() -> datetime:
@@ -28,7 +29,6 @@ def _parse_ts(value: str | None) -> datetime | None:
     s = value.strip()
     if not s:
         return None
-    # SQLite may return "YYYY-MM-DD HH:MM:SS" or ISO
     if " " in s and "T" not in s:
         s = s.replace(" ", "T", 1)
     if s.endswith("Z"):
@@ -73,11 +73,21 @@ class FeedbackLogger:
             CREATE TABLE IF NOT EXISTS node_confidence (
                 node_id TEXT PRIMARY KEY,
                 confidence REAL NOT NULL DEFAULT 1.0,
-                last_reinforced_at TIMESTAMP
+                last_reinforced_at TIMESTAMP,
+                decay_anchor_at TIMESTAMP
+            )
+            """
+        )
+        await self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ingest_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
             """
         )
         await self._ensure_last_reinforced_column()
+        await self._ensure_decay_anchor_column()
         await self._db.commit()
 
     async def _ensure_last_reinforced_column(self) -> None:
@@ -88,6 +98,16 @@ class FeedbackLogger:
         if "last_reinforced_at" not in colnames:
             await self._db.execute(
                 "ALTER TABLE node_confidence ADD COLUMN last_reinforced_at TIMESTAMP"
+            )
+
+    async def _ensure_decay_anchor_column(self) -> None:
+        assert self._db is not None
+        cursor = await self._db.execute("PRAGMA table_info(node_confidence)")
+        rows = await cursor.fetchall()
+        colnames = {r[1] for r in rows}
+        if "decay_anchor_at" not in colnames:
+            await self._db.execute(
+                "ALTER TABLE node_confidence ADD COLUMN decay_anchor_at TIMESTAMP"
             )
 
     async def close(self) -> None:
@@ -110,112 +130,211 @@ class FeedbackLogger:
         )
         await self._db.commit()
 
-    def _effective_confidence(
+    async def record_last_ingest_completed(self) -> None:
+        """Call when a full ingest finishes successfully (enables global decay for untracked nodes)."""
+        assert self._db is not None
+        ts = _format_ts(self._clock())
+        await self._db.execute(
+            """
+            INSERT INTO ingest_meta (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (_INGEST_META_KEY, ts),
+        )
+        await self._db.commit()
+
+    async def _get_last_ingest_completed(self) -> datetime | None:
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT value FROM ingest_meta WHERE key = ?",
+            (_INGEST_META_KEY,),
+        )
+        row = await cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        return _parse_ts(str(row[0]))
+
+    def _decay_reference(
         self,
-        stored: float,
+        decay_anchor_at: datetime | None,
         last_reinforced_at: datetime | None,
-    ) -> float:
-        if last_reinforced_at is None:
-            decay_factor = 1.0
-        else:
-            now = self._clock()
-            reference = now + timedelta(days=settings.demo_time_offset_days)
-            lr = last_reinforced_at
-            days_elapsed = max(0.0, (reference - lr).total_seconds() / 86400.0)
-            decay_factor = math.exp(-settings.confidence_decay_lambda * days_elapsed)
+        last_ingest_completed: datetime | None,
+    ) -> datetime | None:
+        """Clock start for exponential decay: per-node anchor, else last positive, else global ingest."""
+        if decay_anchor_at is not None:
+            return decay_anchor_at
+        if last_reinforced_at is not None:
+            return last_reinforced_at
+        return last_ingest_completed
+
+    def _effective_from_stored(self, stored: float, decay_ref: datetime | None) -> float:
+        if decay_ref is None:
+            return max(stored, _CONFIDENCE_FLOOR)
+        now = self._clock()
+        reference = now + timedelta(days=settings.demo_time_offset_days)
+        days_elapsed = max(0.0, (reference - decay_ref).total_seconds() / 86400.0)
+        decay_factor = math.exp(-settings.confidence_decay_lambda * days_elapsed)
         return max(stored * decay_factor, _CONFIDENCE_FLOOR)
 
     async def _fetch_raw_row(
         self, node_id: str
-    ) -> tuple[float, datetime | None] | None:
+    ) -> tuple[float, datetime | None, datetime | None] | None:
         assert self._db is not None
         cursor = await self._db.execute(
-            "SELECT confidence, last_reinforced_at FROM node_confidence WHERE node_id = ?",
+            """
+            SELECT confidence, last_reinforced_at, decay_anchor_at
+            FROM node_confidence WHERE node_id = ?
+            """,
             (node_id,),
         )
         row = await cursor.fetchone()
         if not row:
             return None
         stored = float(row[0])
-        last_raw = row[1]
-        last_parsed: datetime | None
-        if last_raw is None or last_raw == "":
-            last_parsed = None
-        else:
-            last_parsed = _parse_ts(str(last_raw))
-        return (stored, last_parsed)
+        last_raw, decay_raw = row[1], row[2]
+        last_parsed = (
+            None
+            if last_raw is None or last_raw == ""
+            else _parse_ts(str(last_raw))
+        )
+        decay_parsed = (
+            None
+            if decay_raw is None or decay_raw == ""
+            else _parse_ts(str(decay_raw))
+        )
+        return (stored, last_parsed, decay_parsed)
 
     async def get_confidence(self, node_id: str) -> float:
         assert self._db is not None
+        global_ingest = await self._get_last_ingest_completed()
         raw = await self._fetch_raw_row(node_id)
         if raw is None:
-            return 1.0
-        stored, last_parsed = raw
-        return self._effective_confidence(stored, last_parsed)
+            stored = 1.0
+            decay_ref = global_ingest
+            return self._effective_from_stored(stored, decay_ref)
+        stored, last_parsed, decay_parsed = raw
+        decay_ref = self._decay_reference(decay_parsed, last_parsed, global_ingest)
+        return self._effective_from_stored(stored, decay_ref)
+
+    async def touch_nodes_seen_in_results(self, node_ids: list[str]) -> None:
+        """First time a node appears in search results, set decay_anchor_at so it ages like peers."""
+        if not node_ids:
+            return
+        assert self._db is not None
+        ts = _format_ts(self._clock())
+        for nid in node_ids:
+            await self._db.execute(
+                """
+                INSERT INTO node_confidence (node_id, confidence, last_reinforced_at, decay_anchor_at)
+                VALUES (?, 1.0, NULL, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    decay_anchor_at = COALESCE(node_confidence.decay_anchor_at, excluded.decay_anchor_at)
+                """,
+                (nid, ts),
+            )
+        await self._db.commit()
 
     async def get_confidence_detail(self, node_id: str) -> dict[str, Any]:
         """Snapshot for APIs/UI (e.g. graph visualizer): stored vs effective and decay inputs."""
         assert self._db is not None
+        global_ingest = await self._get_last_ingest_completed()
         raw = await self._fetch_raw_row(node_id)
+        last_ingest_iso = (
+            global_ingest.astimezone(timezone.utc).isoformat()
+            if global_ingest
+            else None
+        )
         if raw is None:
+            decay_ref = global_ingest
+            effective = self._effective_from_stored(1.0, decay_ref)
             return {
                 "tracked": False,
                 "stored": None,
-                "effective": 1.0,
+                "effective": effective,
                 "last_reinforced_at": None,
+                "decay_anchor_at": None,
+                "decay_reference_used": (
+                    "last_ingest_completed_at"
+                    if global_ingest
+                    else "none (effective 1.0 until ingest or first search touch)"
+                ),
+                "last_ingest_completed_at": last_ingest_iso,
                 "confidence_decay_lambda": settings.confidence_decay_lambda,
                 "demo_time_offset_days": settings.demo_time_offset_days,
             }
-        stored, last_parsed = raw
-        effective = self._effective_confidence(stored, last_parsed)
-        last_out: str | None = None
-        if last_parsed is not None:
-            last_out = last_parsed.astimezone(timezone.utc).isoformat()
+        stored, last_parsed, decay_parsed = raw
+        decay_ref = self._decay_reference(decay_parsed, last_parsed, global_ingest)
+        effective = self._effective_from_stored(stored, decay_ref)
+        if decay_parsed is not None:
+            ref_label = "decay_anchor_at"
+        elif last_parsed is not None:
+            ref_label = "last_reinforced_at"
+        elif global_ingest is not None:
+            ref_label = "last_ingest_completed_at"
+        else:
+            ref_label = "none"
         return {
             "tracked": True,
             "stored": stored,
             "effective": effective,
-            "last_reinforced_at": last_out,
+            "last_reinforced_at": (
+                last_parsed.astimezone(timezone.utc).isoformat()
+                if last_parsed
+                else None
+            ),
+            "decay_anchor_at": (
+                decay_parsed.astimezone(timezone.utc).isoformat()
+                if decay_parsed
+                else None
+            ),
+            "decay_reference_used": ref_label,
+            "last_ingest_completed_at": last_ingest_iso,
             "confidence_decay_lambda": settings.confidence_decay_lambda,
             "demo_time_offset_days": settings.demo_time_offset_days,
         }
 
     async def update_confidence(self, node_id: str, signal: FeedbackSignal) -> None:
         assert self._db is not None
+        global_ingest = await self._get_last_ingest_completed()
         raw = await self._fetch_raw_row(node_id)
         if raw is None:
-            effective = 1.0
+            stored = 1.0
+            last_parsed, decay_parsed = None, None
+            decay_ref = self._decay_reference(None, None, global_ingest)
+            effective = self._effective_from_stored(stored, decay_ref)
         else:
-            stored, last_parsed = raw
-            effective = self._effective_confidence(stored, last_parsed)
+            stored, last_parsed, decay_parsed = raw
+            decay_ref = self._decay_reference(decay_parsed, last_parsed, global_ingest)
+            effective = self._effective_from_stored(stored, decay_ref)
+
+        now = self._clock()
+        ts = _format_ts(now)
 
         if signal == FeedbackSignal.positive:
             new_stored = min(effective * 1.1, 2.0)
-            now = self._clock()
-            ts = _format_ts(now)
             if raw is None:
                 await self._db.execute(
                     """
-                    INSERT INTO node_confidence (node_id, confidence, last_reinforced_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO node_confidence (node_id, confidence, last_reinforced_at, decay_anchor_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (node_id, new_stored, ts),
+                    (node_id, new_stored, ts, ts),
                 )
             else:
                 await self._db.execute(
                     """
-                    UPDATE node_confidence SET confidence = ?, last_reinforced_at = ?
+                    UPDATE node_confidence SET confidence = ?, last_reinforced_at = ?, decay_anchor_at = ?
                     WHERE node_id = ?
                     """,
-                    (new_stored, ts, node_id),
+                    (new_stored, ts, ts, node_id),
                 )
         else:
             new_stored = max(effective * 0.9, _CONFIDENCE_FLOOR)
             if raw is None:
                 await self._db.execute(
                     """
-                    INSERT INTO node_confidence (node_id, confidence, last_reinforced_at)
-                    VALUES (?, ?, NULL)
+                    INSERT INTO node_confidence (node_id, confidence, last_reinforced_at, decay_anchor_at)
+                    VALUES (?, ?, NULL, NULL)
                     """,
                     (node_id, new_stored),
                 )

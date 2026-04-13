@@ -101,14 +101,16 @@ async def test_update_positive_sets_timestamp_and_uses_effective_baseline(
     await logger.update_confidence("n4", FeedbackSignal.positive)
 
     cursor = await logger._db.execute(
-        "SELECT confidence, last_reinforced_at FROM node_confidence WHERE node_id = ?",
+        "SELECT confidence, last_reinforced_at, decay_anchor_at FROM node_confidence WHERE node_id = ?",
         ("n4",),
     )
     row = await cursor.fetchone()
     assert row is not None
-    new_stored, new_ts = float(row[0]), row[1]
+    new_stored, new_ts, new_anchor = float(row[0]), row[1], row[2]
     assert new_stored == pytest.approx(min(effective_before * 1.1, 2.0))
     assert str(new_ts).startswith("2025-06-15")
+    assert new_anchor is not None
+    assert str(new_anchor).startswith("2025-06-15")
 
 
 @pytest.mark.asyncio
@@ -171,6 +173,33 @@ async def test_get_confidence_detail_untracked(logger):
     assert d["stored"] is None
     assert d["effective"] == 1.0
     assert d["last_reinforced_at"] is None
+    assert "none" in d["decay_reference_used"]
+
+
+@pytest.mark.asyncio
+async def test_global_ingest_decays_untracked_node(logger, fixed_clock, monkeypatch):
+    monkeypatch.setattr(settings, "confidence_decay_lambda", 1.0)
+    assert logger._db is not None
+    ingest_dt = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    await logger._db.execute(
+        "INSERT INTO ingest_meta (key, value) VALUES ('last_ingest_completed_at', ?)",
+        (_format_ts(ingest_dt),),
+    )
+    await logger._db.commit()
+    days = (fixed_clock - ingest_dt).total_seconds() / 86400.0
+    expected = max(1.0 * math.exp(-1.0 * days), 0.1)
+    got = await logger.get_confidence("never_seen_uuid")
+    assert got == pytest.approx(expected, rel=0.01)
+
+
+@pytest.mark.asyncio
+async def test_touch_sets_decay_anchor_for_new_node(logger, fixed_clock, monkeypatch):
+    monkeypatch.setattr(settings, "confidence_decay_lambda", 0.0)
+    await logger.touch_nodes_seen_in_results(["touch1"])
+    d = await logger.get_confidence_detail("touch1")
+    assert d["tracked"] is True
+    assert d["decay_anchor_at"] is not None
+    assert d["decay_reference_used"] == "decay_anchor_at"
 
 
 @pytest.mark.asyncio
@@ -189,3 +218,4 @@ async def test_get_confidence_detail_tracked(logger, monkeypatch):
     assert d["stored"] == pytest.approx(1.2)
     assert d["effective"] == pytest.approx(1.2)
     assert d["last_reinforced_at"] is not None
+    assert d["decay_reference_used"] == "last_reinforced_at"

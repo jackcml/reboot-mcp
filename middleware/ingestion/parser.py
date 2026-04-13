@@ -4,8 +4,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from re import L
-from typing import Optional
+from typing import Any, Optional
 
 import tree_sitter_javascript as ts_js
 import tree_sitter_python as ts_py
@@ -389,6 +388,7 @@ async def ingest_to_graph(
     use_bulk_first: bool = True,
     job_id: Optional[str] = None,
     verbose: bool = False,
+    feedback_logger: Optional[Any] = None,
 ) -> dict:
     if job_id:
         _init_job(job_id, repo_path, incremental)
@@ -509,6 +509,9 @@ async def ingest_to_graph(
                 end_time=end_time.isoformat(),
                 message=f"Ingest finished in {(end_time - start_time).total_seconds():.2f}s",
             )
+
+        if feedback_logger is not None:
+            await feedback_logger.record_last_ingest_completed()
 
         return {
             "status": "ok",
