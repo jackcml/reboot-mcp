@@ -64,7 +64,12 @@ app = FastAPI(title="Reboot MCP", lifespan=lifespan)
 app.mount("/mcp", mcp_app)
 
 # Mount knowledge graph visualizer
-app.include_router(create_visualizer_router(get_client=get_graphiti_client))
+app.include_router(
+    create_visualizer_router(
+        get_client=get_graphiti_client,
+        feedback_state_attr="feedback_logger",
+    )
+)
 
 
 @app.get("/health")

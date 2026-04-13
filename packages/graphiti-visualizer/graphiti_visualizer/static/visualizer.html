@@ -59,6 +59,9 @@
     padding: 4px 0; border-bottom: 1px solid #0f3460; font-size: 12px; cursor: pointer;
   }
   #detail-panel li:hover { color: #e94560; }
+  #detail-panel .reboot-hint { color: #888; font-size: 11px; margin: -4px 0 8px; line-height: 1.35; }
+  #detail-panel .reboot-table { margin-bottom: 14px; }
+  #detail-panel .muted { color: #888; font-weight: normal; font-size: 11px; }
   #detail-close {
     position: absolute; top: 8px; right: 8px; background: none; border: none;
     color: #a0a0b0; cursor: pointer; font-size: 16px;
@@ -260,6 +263,28 @@
       });
     }
 
+    var rebootHtml = '';
+    if (d.reboot_confidence) {
+      var rc = d.reboot_confidence;
+      var eff = rc.effective != null && rc.effective !== undefined ? Number(rc.effective).toFixed(4) : '—';
+      var storedCell = rc.tracked && rc.stored != null
+        ? Number(rc.stored).toFixed(4)
+        : '<i>no SQLite row — effective uses default 1.0</i>';
+      var lastCell = rc.last_reinforced_at ? esc(String(rc.last_reinforced_at)) : '<i>none (no time decay until first positive feedback)</i>';
+      var lam = rc.confidence_decay_lambda != null ? String(rc.confidence_decay_lambda) : '—';
+      var off = rc.demo_time_offset_days != null ? String(rc.demo_time_offset_days) : '0';
+      rebootHtml =
+        '<h3>REBOOT confidence (SQLite)</h3>' +
+        '<p class="reboot-hint">Values used when ranking search hits. Not stored in Neo4j.</p>' +
+        '<table class="reboot-table">' +
+        '<tr><td>Effective</td><td><b>' + eff + '</b> <span class="muted">(after decay)</span></td></tr>' +
+        '<tr><td>Stored</td><td>' + storedCell + '</td></tr>' +
+        '<tr><td>Last positive</td><td>' + lastCell + '</td></tr>' +
+        '<tr><td>Decay λ</td><td>' + esc(lam) + '</td></tr>' +
+        '<tr><td>Demo offset (days)</td><td>' + esc(off) + '</td></tr>' +
+        '</table>';
+    }
+
     var connHtml = '';
     if (d.connections && d.connections.length > 0) {
       connHtml = '<h3>Connections (' + d.connections.length + ')</h3><ul>';
@@ -276,6 +301,7 @@
       '<h2>' + esc(d.name || d.uuid) + '</h2>' +
       '<div class="labels">' + (d.labels || []).join(', ') + '</div>' +
       (d.summary ? '<div class="summary">' + esc(d.summary) + '</div>' : '') +
+      rebootHtml +
       '<table>' +
       '<tr><td>UUID</td><td>' + esc(d.uuid) + '</td></tr>' +
       '<tr><td>Created</td><td>' + esc(String(d.created_at || '')) + '</td></tr>' +

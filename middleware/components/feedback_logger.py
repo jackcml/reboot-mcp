@@ -1,6 +1,8 @@
 import math
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
+
 import aiosqlite
 
 from middleware.config import settings
@@ -150,6 +152,33 @@ class FeedbackLogger:
             return 1.0
         stored, last_parsed = raw
         return self._effective_confidence(stored, last_parsed)
+
+    async def get_confidence_detail(self, node_id: str) -> dict[str, Any]:
+        """Snapshot for APIs/UI (e.g. graph visualizer): stored vs effective and decay inputs."""
+        assert self._db is not None
+        raw = await self._fetch_raw_row(node_id)
+        if raw is None:
+            return {
+                "tracked": False,
+                "stored": None,
+                "effective": 1.0,
+                "last_reinforced_at": None,
+                "confidence_decay_lambda": settings.confidence_decay_lambda,
+                "demo_time_offset_days": settings.demo_time_offset_days,
+            }
+        stored, last_parsed = raw
+        effective = self._effective_confidence(stored, last_parsed)
+        last_out: str | None = None
+        if last_parsed is not None:
+            last_out = last_parsed.astimezone(timezone.utc).isoformat()
+        return {
+            "tracked": True,
+            "stored": stored,
+            "effective": effective,
+            "last_reinforced_at": last_out,
+            "confidence_decay_lambda": settings.confidence_decay_lambda,
+            "demo_time_offset_days": settings.demo_time_offset_days,
+        }
 
     async def update_confidence(self, node_id: str, signal: FeedbackSignal) -> None:
         assert self._db is not None

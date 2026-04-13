@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -65,6 +65,7 @@ def create_visualizer_router(
     get_client: Callable[[], Awaitable[Any]],
     path_prefix: str = "",
     color_overrides: dict[str, str] | None = None,
+    feedback_state_attr: str | None = None,
 ) -> APIRouter:
     """Create a FastAPI router that serves a Graphiti knowledge graph visualizer.
 
@@ -72,6 +73,8 @@ def create_visualizer_router(
         get_client: Async callable returning an initialized Graphiti instance.
         path_prefix: Optional prefix prepended to all routes.
         color_overrides: Optional dict mapping Neo4j label -> hex color.
+        feedback_state_attr: If set, ``request.app.state.<name>`` is read for node
+            detail enrichment. The object must provide ``async def get_confidence_detail(node_id)``.
     """
     router = APIRouter(prefix=path_prefix)
 
@@ -196,7 +199,7 @@ def create_visualizer_router(
         }
 
     @router.get("/api/graph/node/{uuid}")
-    async def get_node_detail(uuid: str):
+    async def get_node_detail(request: Request, uuid: str):
         client = await get_client()
         driver = client.driver
 
@@ -238,7 +241,7 @@ def create_visualizer_router(
             for er in edge_records
         ]
 
-        return {
+        out: dict[str, Any] = {
             "uuid": record["uuid"],
             "name": record["name"],
             "labels": list(record["labels"] or []),
@@ -247,5 +250,13 @@ def create_visualizer_router(
             "attributes": attrs,
             "connections": connections,
         }
+
+        if feedback_state_attr:
+            fb = getattr(request.app.state, feedback_state_attr, None)
+            getter = getattr(fb, "get_confidence_detail", None) if fb is not None else None
+            if callable(getter):
+                out["reboot_confidence"] = await getter(uuid)
+
+        return out
 
     return router

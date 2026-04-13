@@ -162,3 +162,30 @@ async def test_migration_adds_last_reinforced_column(tmp_path, fixed_clock, monk
     fl = FeedbackLogger(db_path=str(db_path), clock=lambda: fixed_clock)
     await fl.init_db()
     assert await fl.get_confidence("legacy") == pytest.approx(1.25)
+
+
+@pytest.mark.asyncio
+async def test_get_confidence_detail_untracked(logger):
+    d = await logger.get_confidence_detail("no_such_node")
+    assert d["tracked"] is False
+    assert d["stored"] is None
+    assert d["effective"] == 1.0
+    assert d["last_reinforced_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_confidence_detail_tracked(logger, monkeypatch):
+    monkeypatch.setattr(settings, "confidence_decay_lambda", 0.0)
+    assert logger._db is not None
+    await logger._db.execute(
+        """
+        INSERT INTO node_confidence (node_id, confidence, last_reinforced_at)
+        VALUES ('x1', 1.2, '2025-01-01 00:00:00')
+        """
+    )
+    await logger._db.commit()
+    d = await logger.get_confidence_detail("x1")
+    assert d["tracked"] is True
+    assert d["stored"] == pytest.approx(1.2)
+    assert d["effective"] == pytest.approx(1.2)
+    assert d["last_reinforced_at"] is not None
