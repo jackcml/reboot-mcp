@@ -1,0 +1,70 @@
+{
+  "name": "sample-reboot-eval",
+  "description": "Template manifest for evaluating REBOOT retrieval quality on issue-level tasks.",
+  "environment": {
+    "docker": {
+      "enabled": true,
+      "compose_file": "eval/docker-compose.eval.yml",
+      "compose_project_name": "reboot-eval",
+      "project_dir": ".",
+      "services": [
+        "neo4j"
+      ],
+      "reset_between_repos": true,
+      "shutdown_on_exit": true
+    },
+    "server_process": {
+      "auto_start": true,
+      "cwd": ".",
+      "env": {
+        "NEO4J_URI": "bolt://127.0.0.1:17687",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "reboot_dev",
+        "SERVER_PORT": "8010"
+      }
+    }
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8010",
+    "ingest_timeout_seconds": 600,
+    "ingest_poll_interval_seconds": 5.0,
+    "cancel_ingest_on_timeout": true
+  },
+  "llm": {
+    "query_generator": {
+      "model": "gpt-5-mini",
+      "max_tokens": 250
+    },
+    "judge": {
+      "model": "gpt-5-mini",
+      "max_tokens": 1200
+    }
+  },
+  "workspace": {
+    "clone_root": "eval/workspaces/repos",
+    "artifact_root": "eval/artifacts"
+  },
+  "snapshot": {
+    "max_files": 400,
+    "max_tree_chars": 12000,
+    "max_file_chars": 4000
+  },
+  "repos": [
+    {
+      "id": "example-repo",
+      "clone_url": "https://github.com/example/project.git",
+      "checkout": "main",
+      "cases": [
+        {
+          "id": "example-case",
+          "title": "Replace this with a real SWE-Bench-Lite issue",
+          "problem_statement": "Describe the issue here.",
+          "solution_patch": "diff --git a/example.py b/example.py\n--- a/example.py\n+++ b/example.py\n@@\n-print('old')\n+print('new')\n",
+          "metadata": {
+            "source": "template"
+          }
+        }
+      ]
+    }
+  ]
+}
