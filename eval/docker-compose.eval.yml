@@ -1,0 +1,14 @@
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    ports:
+      - "17474:7474"
+      - "17687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/reboot_dev
+    volumes:
+      - neo4j_eval_data:/data
+
+volumes:
+  neo4j_eval_data:
+
