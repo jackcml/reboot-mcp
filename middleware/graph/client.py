@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Awaitable, Callable, Optional
 
 from graphiti_core import Graphiti
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
@@ -95,7 +96,23 @@ async def is_graph_empty() -> bool:
     return int(count) == 0
 
 
-async def add_code_episodes_bulk(code_nodes: list, group_id: str | None = None) -> int:
+BULK_CHUNK_SIZE = 50
+
+
+async def add_code_episodes_bulk(
+    code_nodes: list,
+    group_id: str | None = None,
+    chunk_size: int = BULK_CHUNK_SIZE,
+    progress_callback: Optional[Callable[[int, int], Awaitable[None] | None]] = None,
+) -> int:
+    """Add code nodes via Graphiti's bulk pipeline, chunked.
+
+    Graphiti's add_episode_bulk runs entity extraction, dedupe, and edge
+    resolution as one pipeline that only persists at the end. For large repos
+    a single call hangs for tens of minutes with no progress and loses all
+    work on cancel. Chunking gives partial persistence and lets the caller
+    surface progress.
+    """
     client = await get_graphiti_client()
     raw_episodes: list[RawEpisode] = []
 
@@ -123,15 +140,25 @@ async def add_code_episodes_bulk(code_nodes: list, group_id: str | None = None) 
             )
         )
 
-    if not raw_episodes:
+    total = len(raw_episodes)
+    if total == 0:
         return 0
 
-    await client.add_episode_bulk(
-        raw_episodes,
-        group_id=group_id,
-        entity_types=ENTITY_TYPES,
-    )
-    return len(raw_episodes)
+    processed = 0
+    for start in range(0, total, chunk_size):
+        chunk = raw_episodes[start : start + chunk_size]
+        await client.add_episode_bulk(
+            chunk,
+            group_id=group_id,
+            entity_types=ENTITY_TYPES,
+        )
+        processed += len(chunk)
+        if progress_callback is not None:
+            result = progress_callback(processed, total)
+            if hasattr(result, "__await__"):
+                await result
+
+    return processed
 
 
 
