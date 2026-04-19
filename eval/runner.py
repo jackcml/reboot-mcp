@@ -27,6 +27,7 @@ from eval.repo import RepositoryManager
 QUERY_AGENT_SYSTEM_PROMPT = """You generate the first retrieval query for a coding agent.
 The goal is to ask REBOOT for the most useful context to start solving the issue.
 Use the repository snapshot to ground the query, but do not answer the issue and do not use the gold patch.
+The query should be only one simple question to begin exploration of issue-related code context.
 Return strict JSON with keys:
 - query: string
 - rationale: string
