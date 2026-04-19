@@ -128,7 +128,7 @@ class OpenAIJsonClient:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self._config.temperature,
-            max_tokens=self._config.max_tokens,
+            max_completion_tokens=self._config.max_tokens,
             timeout=self._config.timeout_seconds,
         )
         raw_text = response.choices[0].message.content or ""
