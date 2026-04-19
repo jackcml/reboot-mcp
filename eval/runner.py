@@ -46,6 +46,39 @@ Return strict JSON with keys:
 - missing_context: array of short strings
 Do not include any other text."""
 
+QUERY_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string"},
+        "rationale": {"type": "string"},
+        "file_context": {"type": ["string", "null"]},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": ["query", "rationale", "file_context", "confidence"],
+}
+
+JUDGE_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdict": {"type": "string", "enum": ["strong", "partial", "weak", "irrelevant"]},
+        "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "likely_useful": {"type": "boolean"},
+        "reasoning": {"type": "string"},
+        "key_hits": {"type": "array", "items": {"type": "string"}},
+        "missing_context": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "verdict",
+        "score",
+        "likely_useful",
+        "reasoning",
+        "key_hits",
+        "missing_context",
+    ],
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -98,7 +131,12 @@ class LLMQueryAgent:
                 "Generate the best initial retrieval query for REBOOT.",
             ]
         )
-        trace = self._client.complete_json(QUERY_AGENT_SYSTEM_PROMPT, user_prompt)
+        trace = self._client.complete_json(
+            QUERY_AGENT_SYSTEM_PROMPT,
+            user_prompt,
+            schema_name="generated_query",
+            schema=QUERY_JSON_SCHEMA,
+        )
         payload = trace.parsed_json
         return GeneratedQuery(
             query=str(payload["query"]).strip(),
@@ -148,7 +186,12 @@ class LLMContextJudge:
                 "Judge how well the retrieved ranking captures the context needed to solve the issue.",
             ]
         )
-        trace = self._client.complete_json(JUDGE_SYSTEM_PROMPT, user_prompt)
+        trace = self._client.complete_json(
+            JUDGE_SYSTEM_PROMPT,
+            user_prompt,
+            schema_name="judge_result",
+            schema=JUDGE_JSON_SCHEMA,
+        )
         payload = trace.parsed_json
         return JudgeResult(
             verdict=str(payload["verdict"]).strip(),
