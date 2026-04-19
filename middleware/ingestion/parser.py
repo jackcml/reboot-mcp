@@ -450,7 +450,19 @@ async def ingest_to_graph(
             if job_id:
                 _update_job(job_id, message="Using bulk ingestion path")
 
-            episodes_added = await add_code_episodes_bulk(code_nodes, group_id=group_id)
+            def _on_chunk(processed: int, total: int) -> None:
+                if job_id:
+                    _update_job(
+                        job_id,
+                        processed_nodes=processed,
+                        message=f"Bulk ingest: {processed}/{total} nodes",
+                    )
+
+            episodes_added = await add_code_episodes_bulk(
+                code_nodes,
+                group_id=group_id,
+                progress_callback=_on_chunk,
+            )
 
             if job_id:
                 _update_job(job_id, processed_nodes=episodes_added)
