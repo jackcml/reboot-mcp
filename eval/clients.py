@@ -127,7 +127,6 @@ class OpenAIJsonClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=self._config.temperature,
             max_completion_tokens=self._config.max_tokens,
             timeout=self._config.timeout_seconds,
         )
