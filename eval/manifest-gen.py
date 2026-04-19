@@ -77,8 +77,8 @@ manifest = {
         "cancel_ingest_on_timeout": True,
     },
     "llm": {
-        "query_generator": {"model": "gpt-5-mini", "max_tokens": 250},
-        "judge": {"model": "gpt-5-mini", "max_tokens": 1200},
+        "query_generator": {"model": "gpt-5-mini", "max_tokens": 8192},
+        "judge": {"model": "gpt-5-mini", "max_tokens": 8192},
     },
     "workspace": {
         "clone_root": "eval/workspaces/repos",
