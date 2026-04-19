@@ -6,10 +6,20 @@ from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.search.search_config import (
+    EdgeReranker,
+    EdgeSearchConfig,
+    EdgeSearchMethod,
+    NodeReranker,
+    NodeSearchConfig,
+    NodeSearchMethod,
+    SearchConfig as GraphitiSearchConfig,
+)
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 from graphiti_core.utils.bulk_utils import RawEpisode
 
 from middleware.config import settings
+from middleware.components.search_config import SearchConfig as RebootSearchConfig
 from middleware.graph.schemas import CodeClass, CodeFunction, CodeModule
 
 _client: Graphiti | None = None
@@ -52,11 +62,103 @@ async def close_graphiti_client() -> None:
         await _client.close()
         _client = None
 
+def _build_graphiti_config(config: RebootSearchConfig, limit:int) -> GraphitiSearchConfig:
+    # BFS traverses graph edges to find structurally related nodes — only worth the cost when structural weight is meaningful
+    node_methods = [NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity]
+    edge_methods = [EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity]
 
-async def search_graph(query: str, num_results: int = 10) -> list[dict]:
+    if config.structural_weight >= 0.3:
+        node_methods.append(NodeSearchMethod.bfs)
+        edge_methods.append(EdgeSearchMethod.bfs)
+    
+    dominant = max(
+        ("semantic", config.semantic_weight),
+        ("structural", config.structural_weight),
+        ("recency", config.recency_weight),
+        key=lambda x: x[1],
+    )[0]
+
+    if dominant == "recency":
+        node_reranker = NodeReranker.episode_mentions
+        edge_reranker = EdgeReranker.episode_mentions
+    elif dominant == "structural":
+        node_reranker = NodeReranker.node_distance
+        edge_reranker = EdgeReranker.node_distance
+    else:
+        node_reranker = NodeReranker.rrf
+        edge_reranker = EdgeReranker.rrf
+
+    # sim_min_score: high semantic weight → lower threshold (wider semantic net);                                             
+    # high factual/recency → higher threshold (tighter exact-match filter). 
+    sim_min_score = round(0.7 - (0.2 * config.semantic_weight), 2)
+
+    # bfs_max_depth scales with structural weight: 0.2 → depth 1, 0.5 → depth 3, 1.0 → depth 5
+    bfs_max_depth = max(1, round(config.structural_weight * 5))
+
+    return GraphitiSearchConfig(
+        node_config=NodeSearchConfig(
+            search_methods=node_methods,
+            reranker=node_reranker,
+            sim_min_score=sim_min_score,
+            bfs_max_depth=bfs_max_depth,
+        ),
+        edge_config=EdgeSearchConfig(
+            search_methods=edge_methods,
+            reranker=edge_reranker,
+            sim_min_score=sim_min_score,
+            bfs_max_depth=bfs_max_depth,
+        ),
+        limit=limit,
+    )
+
+async def delete_episodes_for_file(file_path: str) -> int:
+    """Delete all episodes ingested from a given file path. Returns the number of episodes deleted."""
     client = await get_graphiti_client()
-    search_config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
-    results = await client.search_(query, config=search_config)
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (e:Episodic) WHERE e.source_description CONTAINS $file_path RETURN e.uuid AS uuid",
+        {"file_path": file_path},
+    )
+    uuids = [
+        (row.get("uuid") if isinstance(row, dict) else row["uuid"])
+        for row in records
+    ]
+    for episode_uuid in uuids:
+        await client.remove_episode(episode_uuid)
+    return len(uuids)
+
+
+async def find_center_node_uuid(file_path: str) -> str | None:
+    """Return the UUID of a graph node whose file_path matches, or None if not found."""
+    client = await get_graphiti_client()
+    records, _, _ = await client.driver.execute_query(
+        "MATCH (n) WHERE n.file_path = $file_path RETURN n.uuid AS uuid LIMIT 1",
+        {"file_path": file_path},
+    )
+    if not records:
+        return None
+    row = records[0]
+    return row.get("uuid") if isinstance(row, dict) else row["uuid"]
+
+
+async def search_graph(
+    query: str,
+    config: RebootSearchConfig | None = None,
+    file_context: str | None = None,
+    num_results: int = 10,
+) -> list[dict]:
+    client = await get_graphiti_client()
+
+    search_config = (
+        _build_graphiti_config(config, num_results)
+        if config is not None
+        else COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": num_results})
+    )
+
+    center_node_uuid = None
+    if file_context:
+        center_node_uuid = await find_center_node_uuid(file_context)
+
+    results = await client.search_(query, config=search_config, center_node_uuid=center_node_uuid)
     items: list[dict] = []
 
     for node, score in zip(results.nodes, results.node_reranker_scores):

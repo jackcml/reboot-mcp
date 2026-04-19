@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import tree_sitter_javascript as ts_js
 import tree_sitter_python as ts_py
@@ -16,6 +16,7 @@ from middleware.graph.client import (
     ENTITY_TYPES,
     add_code_episode,
     add_code_episodes_bulk,
+    delete_episodes_for_file,
     get_graphiti_client,
     is_graph_empty,
 )
@@ -136,9 +137,17 @@ class CodeParser:
 
         for child in root.children:
             if child.type == "function_definition":
-                nodes.append(self._parse_python_function(child, source_bytes, file_path))
+                nodes.append(self._parse_python_function(child, source_bytes, file_path))   # returns one node → append
             elif child.type == "class_definition":
-                nodes.append(self._parse_python_class(child, source_bytes, file_path))
+                nodes.extend(self._parse_python_class(child, source_bytes, file_path))  # returns list → extend
+            elif child.type == "decorated_definition":
+                inner = child.child_by_field_name("definition")
+                if inner is None:
+                    inner = child.children[-1]
+                if inner.type == "function_definition":
+                    nodes.append(self._parse_python_function(inner, source_bytes, file_path))
+                elif inner.type == "class_definition":
+                    nodes.extend(self._parse_python_class(inner, source_bytes, file_path))
             elif child.type in ("import_statement", "import_from_statement"):
                 pass  # collected at module level
 
@@ -194,6 +203,7 @@ class CodeParser:
         name = name_node.text.decode("utf-8") if name_node else "<unknown>"
         body = node.child_by_field_name("body")
         methods: list[str] = []
+        method_nodes: list[CodeNode] = []
         docstring = ""
         if body:
             for child in body.children:
@@ -201,6 +211,7 @@ class CodeParser:
                     m_name = child.child_by_field_name("name")
                     if m_name:
                         methods.append(m_name.text.decode("utf-8"))
+                    method_nodes.append(self._parse_python_function(child, source_bytes, file_path))
             if body.children:
                 first = body.children[0]
                 if first.type == "expression_statement" and first.children:
@@ -208,7 +219,7 @@ class CodeParser:
                     if expr.type == "string":
                         docstring = expr.text.decode("utf-8").strip('"\'')
 
-        return CodeNode(
+        class_node = CodeNode(
             kind="class",
             name=name,
             language="python",
@@ -220,6 +231,8 @@ class CodeParser:
             docstring=docstring,
         )
 
+        return [class_node] + method_nodes
+
     def _extract_js_nodes(self, tree, source_bytes: bytes, file_path: str) -> list[CodeNode]:
         nodes: list[CodeNode] = []
         root = tree.root_node
@@ -229,13 +242,46 @@ class CodeParser:
                 nodes.append(self._parse_js_function(child, source_bytes, file_path))
             elif child.type == "class_declaration":
                 nodes.append(self._parse_js_class(child, source_bytes, file_path))
+            elif child.type in ("lexical_declaration", "variable_declaration"):
+                nodes.extend(self._extract_js_variable_functions(child, source_bytes, file_path))
             elif child.type == "export_statement":
                 for sub in child.children:
                     if sub.type == "function_declaration":
                         nodes.append(self._parse_js_function(sub, source_bytes, file_path))
                     elif sub.type == "class_declaration":
                         nodes.append(self._parse_js_class(sub, source_bytes, file_path))
+                    elif sub.type in ("lexical_declaration", "variable_declaration"):
+                        nodes.extend(self._extract_js_variable_functions(sub, source_bytes, file_path))
 
+        return nodes
+
+    def _extract_js_variable_functions(self, node, source_bytes: bytes, file_path: str) -> list[CodeNode]:
+        nodes = []
+        for declarator in node.children:
+            if declarator.type != "variable_declarator":
+                continue
+            name_node = declarator.child_by_field_name("name")
+            value_node = declarator.child_by_field_name("value")
+            if not name_node or not value_node:
+                continue
+            if value_node.type not in ("arrow_function", "function_expression"):
+                continue
+            name = name_node.text.decode("utf-8")
+            params_node = (
+                value_node.child_by_field_name("parameters")
+                or value_node.child_by_field_name("formal_parameters")
+            )
+            params = params_node.text.decode("utf-8") if params_node else "()"
+            nodes.append(CodeNode(
+                kind="function",
+                name=name,
+                language="javascript",
+                file_path=file_path,
+                start_line=declarator.start_point[0] + 1,
+                end_line=declarator.end_point[0] + 1,
+                source=node.text.decode("utf-8"),
+                signature=f"const {name} = {params} =>",
+            ))
         return nodes
 
     def _parse_js_function(self, node, source_bytes: bytes, file_path: str) -> CodeNode:
@@ -343,6 +389,7 @@ async def ingest_to_graph(
     use_bulk_first: bool = True,
     job_id: Optional[str] = None,
     verbose: bool = False,
+    feedback_logger: Optional[Any] = None,
 ) -> dict:
     if job_id:
         _init_job(job_id, repo_path, incremental)
@@ -448,6 +495,16 @@ async def ingest_to_graph(
                 if job_id:
                     _update_job(job_id, processed_nodes=episodes_added)
 
+        episodes_deleted = 0
+        if removed_files:
+            if job_id:
+                _update_job(job_id, stage="cleanup", message=f"Removing nodes for {len(removed_files)} deleted files")
+            for fp in removed_files:
+                count = await delete_episodes_for_file(fp)
+                episodes_deleted += count
+                if verbose:
+                    print(f"[INGEST {job_id}] Removed {count} episodes for deleted file: {fp}")
+
         _set_repo_state(repo_path, current_file_state)
 
         end_time = datetime.now(timezone.utc)
@@ -464,9 +521,13 @@ async def ingest_to_graph(
                 message=f"Ingest finished in {(end_time - start_time).total_seconds():.2f}s",
             )
 
+        if feedback_logger is not None:
+            await feedback_logger.record_last_ingest_completed()
+
         return {
             "status": "ok",
             "episodes_added": episodes_added,
+            "episodes_deleted": episodes_deleted,
             "files_scanned": num_files,
             "files_removed": num_removed,
             "duration_seconds": (end_time - start_time).total_seconds(),
