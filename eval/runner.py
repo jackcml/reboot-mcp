@@ -218,17 +218,23 @@ class EvalRunner:
         query_agent: LLMQueryAgent | None = None,
         judge: LLMContextJudge | None = None,
         sleep_fn=time.sleep,
+        reuse_last_ingest: bool = False,
+        keep_graph: bool = False,
     ):
         self._manifest = manifest
         self._manifest_path = manifest_path
         self._manifest_dir = manifest_path.parent
         self._run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self._reuse_last_ingest = reuse_last_ingest
         artifact_root = self._resolve_project_path(manifest.workspace.artifact_root)
         clone_root = self._resolve_project_path(manifest.workspace.clone_root)
         self._artifacts = ArtifactStore(artifact_root, self._run_id)
         self._reboot_client = reboot_client or RebootRestClient(manifest.server)
         self._environment = environment or EvalEnvironment(
-            manifest.environment, self._reboot_client, self._artifacts.run_dir
+            manifest.environment,
+            self._reboot_client,
+            self._artifacts.run_dir,
+            preserve_graph=reuse_last_ingest or keep_graph,
         )
         self._repo_manager = repo_manager or RepositoryManager(
             clone_root,
@@ -308,7 +314,17 @@ class EvalRunner:
         self._artifacts.append_event("repo_started", {"repo_id": repo.id})
         prepared_repo = self._repo_manager.prepare_repo(repo)
         snapshot = self._repo_manager.build_snapshot(prepared_repo)
-        ingest = self._run_ingest(prepared_repo.repo_path)
+        if self._reuse_last_ingest:
+            self._artifacts.append_event("ingest_reused", {"repo_id": repo.id})
+            ingest = IngestRunResult(
+                job_id="reused",
+                timed_out=False,
+                start_response={"stage": "reused"},
+                status_history=[],
+                final_status={"stage": "reused"},
+            )
+        else:
+            ingest = self._run_ingest(prepared_repo.repo_path)
 
         cases_out: list[CaseRunRecord] = []
         selected_cases = [
@@ -478,6 +494,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--run-id",
         help="Optional explicit run id. Defaults to a UTC timestamp.",
     )
+    parser.add_argument(
+        "--reuse-last-ingest",
+        action="store_true",
+        help=(
+            "Skip ingestion and reuse the Neo4j volume from the previous run. "
+            "The graph must already be populated (run with --keep-graph first); "
+            "useful for iterating on query/judge agents."
+        ),
+    )
+    parser.add_argument(
+        "--keep-graph",
+        action="store_true",
+        help=(
+            "Run ingestion normally but preserve the Neo4j volume on exit and "
+            "skip inter-repo resets. Use this to bootstrap a graph that "
+            "subsequent --reuse-last-ingest runs can attach to."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -487,7 +521,13 @@ def main(argv: list[str] | None = None) -> int:
     if not manifest_path.is_absolute():
         manifest_path = (PROJECT_ROOT / manifest_path).resolve()
     manifest = load_manifest(manifest_path)
-    runner = EvalRunner(manifest, manifest_path, run_id=args.run_id)
+    runner = EvalRunner(
+        manifest,
+        manifest_path,
+        run_id=args.run_id,
+        reuse_last_ingest=args.reuse_last_ingest,
+        keep_graph=args.keep_graph,
+    )
     summary = runner.run(repo_filter=args.repo, case_filter=args.case)
     print(
         json.dumps(
