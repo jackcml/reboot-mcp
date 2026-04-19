@@ -27,7 +27,15 @@ from eval.repo import RepositoryManager
 QUERY_AGENT_SYSTEM_PROMPT = """You generate the first retrieval query for a coding agent.
 The goal is to ask REBOOT for the most useful context to start solving the issue.
 Use the repository snapshot to ground the query, but do not answer the issue and do not use the gold patch.
+
+The agent's tool definition is as follows:
+<tool>
+**Before answering any question about the codebase**, call `reboot_search` with the developer's query and, if available, the current file path as `file_context`. Use the returned context to inform your answer — do not rely solely on files you have already read.
+Always prefer `reboot_search` over manually grepping or reading files when the user asks a question about how the codebase works, where something is defined, or why something was built a certain way. Manual file reads are still appropriate for targeted edits after you already know which file to change.
+</tool>
 The query should be only one simple question to begin exploration of issue-related code context.
+Do not ask for specific file contents, instead, ask a simple question related to the concept in the issue, like "Where are WCS transformations handled?".
+
 Return strict JSON with keys:
 - query: string
 - rationale: string
