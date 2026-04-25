@@ -13,9 +13,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class DockerComposeController:
-    def __init__(self, config, artifact_dir: Path):
+    def __init__(self, config, artifact_dir: Path, *, preserve_volumes: bool = False):
         self._config = config
         self._artifact_dir = artifact_dir
+        self._preserve_volumes = preserve_volumes
 
     def up(self) -> None:
         if not self._config.enabled:
@@ -25,13 +26,19 @@ class DockerComposeController:
     def reset(self) -> None:
         if not self._config.enabled:
             return
-        self._run_compose(["down", "--volumes", "--remove-orphans"])
+        self._run_compose(["down", *self._down_flags()])
         self.up()
 
     def shutdown(self) -> None:
         if not self._config.enabled or not self._config.shutdown_on_exit:
             return
-        self._run_compose(["down", "--volumes", "--remove-orphans"])
+        self._run_compose(["down", *self._down_flags()])
+
+    def _down_flags(self) -> list[str]:
+        flags = ["--remove-orphans"]
+        if not self._preserve_volumes:
+            flags.insert(0, "--volumes")
+        return flags
 
     def _run_compose(self, args: list[str]) -> None:
         compose_file = self._resolve_project_path(self._config.compose_file)
@@ -143,12 +150,18 @@ class EvalEnvironment:
         config: EnvironmentConfig,
         server_client: RebootRestClient,
         artifact_dir: Path,
+        *,
+        preserve_graph: bool = False,
     ):
-        self._docker = DockerComposeController(config.docker, artifact_dir)
+        self._docker = DockerComposeController(
+            config.docker, artifact_dir, preserve_volumes=preserve_graph
+        )
         self._server = ServerProcessController(
             config.server_process, server_client, artifact_dir
         )
-        self._reset_between_repos = config.docker.reset_between_repos
+        self._reset_between_repos = (
+            config.docker.reset_between_repos and not preserve_graph
+        )
         self._started = False
 
     def ensure_started(self) -> None:

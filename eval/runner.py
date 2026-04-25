@@ -27,6 +27,15 @@ from eval.repo import RepositoryManager
 QUERY_AGENT_SYSTEM_PROMPT = """You generate the first retrieval query for a coding agent.
 The goal is to ask REBOOT for the most useful context to start solving the issue.
 Use the repository snapshot to ground the query, but do not answer the issue and do not use the gold patch.
+
+The agent's tool definition is as follows:
+<tool>
+**Before answering any question about the codebase**, call `reboot_search` with the developer's query and, if available, the current file path as `file_context`. Use the returned context to inform your answer — do not rely solely on files you have already read.
+Always prefer `reboot_search` over manually grepping or reading files when the user asks a question about how the codebase works, where something is defined, or why something was built a certain way. Manual file reads are still appropriate for targeted edits after you already know which file to change.
+</tool>
+The query should be only one simple question to begin exploration of issue-related code context.
+Do not ask for specific file contents, instead, ask a simple question related to the concept in the issue, like "Where are WCS transformations handled?".
+
 Return strict JSON with keys:
 - query: string
 - rationale: string
@@ -45,6 +54,39 @@ Return strict JSON with keys:
 - key_hits: array of short strings
 - missing_context: array of short strings
 Do not include any other text."""
+
+QUERY_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string"},
+        "rationale": {"type": "string"},
+        "file_context": {"type": ["string", "null"]},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": ["query", "rationale", "file_context", "confidence"],
+}
+
+JUDGE_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdict": {"type": "string", "enum": ["strong", "partial", "weak", "irrelevant"]},
+        "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "likely_useful": {"type": "boolean"},
+        "reasoning": {"type": "string"},
+        "key_hits": {"type": "array", "items": {"type": "string"}},
+        "missing_context": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "verdict",
+        "score",
+        "likely_useful",
+        "reasoning",
+        "key_hits",
+        "missing_context",
+    ],
+}
 
 
 def utc_now() -> str:
@@ -98,7 +140,12 @@ class LLMQueryAgent:
                 "Generate the best initial retrieval query for REBOOT.",
             ]
         )
-        trace = self._client.complete_json(QUERY_AGENT_SYSTEM_PROMPT, user_prompt)
+        trace = self._client.complete_json(
+            QUERY_AGENT_SYSTEM_PROMPT,
+            user_prompt,
+            schema_name="generated_query",
+            schema=QUERY_JSON_SCHEMA,
+        )
         payload = trace.parsed_json
         return GeneratedQuery(
             query=str(payload["query"]).strip(),
@@ -148,7 +195,12 @@ class LLMContextJudge:
                 "Judge how well the retrieved ranking captures the context needed to solve the issue.",
             ]
         )
-        trace = self._client.complete_json(JUDGE_SYSTEM_PROMPT, user_prompt)
+        trace = self._client.complete_json(
+            JUDGE_SYSTEM_PROMPT,
+            user_prompt,
+            schema_name="judge_result",
+            schema=JUDGE_JSON_SCHEMA,
+        )
         payload = trace.parsed_json
         return JudgeResult(
             verdict=str(payload["verdict"]).strip(),
@@ -174,17 +226,23 @@ class EvalRunner:
         query_agent: LLMQueryAgent | None = None,
         judge: LLMContextJudge | None = None,
         sleep_fn=time.sleep,
+        reuse_last_ingest: bool = False,
+        keep_graph: bool = False,
     ):
         self._manifest = manifest
         self._manifest_path = manifest_path
         self._manifest_dir = manifest_path.parent
         self._run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self._reuse_last_ingest = reuse_last_ingest
         artifact_root = self._resolve_project_path(manifest.workspace.artifact_root)
         clone_root = self._resolve_project_path(manifest.workspace.clone_root)
         self._artifacts = ArtifactStore(artifact_root, self._run_id)
         self._reboot_client = reboot_client or RebootRestClient(manifest.server)
         self._environment = environment or EvalEnvironment(
-            manifest.environment, self._reboot_client, self._artifacts.run_dir
+            manifest.environment,
+            self._reboot_client,
+            self._artifacts.run_dir,
+            preserve_graph=reuse_last_ingest or keep_graph,
         )
         self._repo_manager = repo_manager or RepositoryManager(
             clone_root,
@@ -264,7 +322,17 @@ class EvalRunner:
         self._artifacts.append_event("repo_started", {"repo_id": repo.id})
         prepared_repo = self._repo_manager.prepare_repo(repo)
         snapshot = self._repo_manager.build_snapshot(prepared_repo)
-        ingest = self._run_ingest(prepared_repo.repo_path)
+        if self._reuse_last_ingest:
+            self._artifacts.append_event("ingest_reused", {"repo_id": repo.id})
+            ingest = IngestRunResult(
+                job_id="reused",
+                timed_out=False,
+                start_response={"stage": "reused"},
+                status_history=[],
+                final_status={"stage": "reused"},
+            )
+        else:
+            ingest = self._run_ingest(prepared_repo.repo_path)
 
         cases_out: list[CaseRunRecord] = []
         selected_cases = [
@@ -434,6 +502,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--run-id",
         help="Optional explicit run id. Defaults to a UTC timestamp.",
     )
+    parser.add_argument(
+        "--reuse-last-ingest",
+        action="store_true",
+        help=(
+            "Skip ingestion and reuse the Neo4j volume from the previous run. "
+            "The graph must already be populated (run with --keep-graph first); "
+            "useful for iterating on query/judge agents."
+        ),
+    )
+    parser.add_argument(
+        "--keep-graph",
+        action="store_true",
+        help=(
+            "Run ingestion normally but preserve the Neo4j volume on exit and "
+            "skip inter-repo resets. Use this to bootstrap a graph that "
+            "subsequent --reuse-last-ingest runs can attach to."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -443,7 +529,13 @@ def main(argv: list[str] | None = None) -> int:
     if not manifest_path.is_absolute():
         manifest_path = (PROJECT_ROOT / manifest_path).resolve()
     manifest = load_manifest(manifest_path)
-    runner = EvalRunner(manifest, manifest_path, run_id=args.run_id)
+    runner = EvalRunner(
+        manifest,
+        manifest_path,
+        run_id=args.run_id,
+        reuse_last_ingest=args.reuse_last_ingest,
+        keep_graph=args.keep_graph,
+    )
     summary = runner.run(repo_filter=args.repo, case_filter=args.case)
     print(
         json.dumps(

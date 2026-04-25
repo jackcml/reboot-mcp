@@ -120,18 +120,39 @@ class OpenAIJsonClient:
         self._config = config
         self._client = OpenAI(**kwargs)
 
-    def complete_json(self, system_prompt: str, user_prompt: str) -> LLMTrace:
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        schema_name: str,
+        schema: dict[str, Any],
+    ) -> LLMTrace:
         response = self._client.chat.completions.create(
             model=self._config.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=self._config.temperature,
-            max_tokens=self._config.max_tokens,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+            max_completion_tokens=self._config.max_tokens,
             timeout=self._config.timeout_seconds,
         )
         raw_text = response.choices[0].message.content or ""
+        if not raw_text.strip():
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            request_id = getattr(response, "_request_id", None)
+            raise RuntimeError(
+                "OpenAI returned empty content for a structured JSON request. "
+                f"model={self._config.model}, finish_reason={finish_reason}, request_id={request_id}"
+            )
         parsed = _extract_json(raw_text)
         return LLMTrace(
             system_prompt=system_prompt,
