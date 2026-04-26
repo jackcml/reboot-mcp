@@ -14,3 +14,5 @@ neo4j_data/
 .claude/settings.local.json
 eval/artifacts/
 eval/workspaces/
+node_modules/
+middleware/ingestion/ingest_state.json

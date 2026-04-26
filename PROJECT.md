@@ -19,11 +19,14 @@ Any MCP-Compatible Agent
   REBOOT MCP Server / FastAPI Service (Python)
        │
        ├─ reboot_search           → tool: classify query, retrieve, rank, return context
-       ├─ reboot_feedback         → tool: record usage signal (thumbs up/down, reformulation)
+       ├─ reboot_feedback         → tool: record usage signal (positive/negative)
        ├─ reboot_explain          → tool: explain last retrieval decision with scores
+       ├─ reboot_ingest           → tool: start an async ingest job (returns job_id)
+       ├─ reboot_ingest_status    → tool: poll ingest job status
+       └─ reboot_ingest_cancel    → tool: cancel an ingest job
        │
        │  Internal components:
-       ├─ QueryClassifier         → categorizes intent: conceptual / procedural / factual
+       ├─ QueryClassifier         → categorizes intent: conceptual / procedural / factual / debugging
        ├─ SearchConfigSelector    → picks per-type weight recipes
        ├─ ConfidencePostRanker   → applies node confidence multipliers to results
        └─ FeedbackLogger         → records usage signals to SQLite
@@ -32,10 +35,10 @@ Any MCP-Compatible Agent
        ▼
   Graphiti + Neo4j (Docker)      ← Knowledge Graph
        ▲
-       │  code nodes / temporal edges
+       │  code nodes / edges (see notes on git-history edges below)
   Ingestion Pipeline
        ├─ tree-sitter             → function/class boundary parsing
-       └─ Git History             → temporal edges
+       └─ (Future work) Git History → temporal edges
 ```
 
 ### Why MCP Instead of Forking an Agent
@@ -87,7 +90,7 @@ These are the tools the REBOOT MCP server exposes to connected agents:
 **Input:**
 
 - `query_id` (string) — ID of the query this feedback relates to
-- `signal` (enum) — one of: `positive`, `negative`, `reformulation`, `context_used`, `context_ignored`
+- `signal` (enum) — one of: `positive`, `negative`
 - `details` (string, optional) — free-text elaboration
 
 **Behavior:** Logs the signal to SQLite and triggers async confidence updates on affected knowledge graph nodes.
@@ -110,14 +113,29 @@ These are the tools the REBOOT MCP server exposes to connected agents:
 
 - `repo_path` (string) — path to the repository root
 - `incremental` (bool, optional) — if true, only process changed files since last ingestion
+- `verbose` (bool, optional) — if true, print periodic progress updates to server logs
 
-**Behavior:** Runs tree-sitter parsing to extract function/class boundaries, processes Git history for temporal edges, and indexes everything into Graphiti/Neo4j.
+**Behavior:** Starts an **async ingestion job**. Ingestion uses tree-sitter parsing to extract function/class boundaries and indexes them into Graphiti/Neo4j. The job can be polled and cancelled.
+
+**Output:** `{ status: "started", job_id: "..." }`
+
+### `reboot_ingest_status`
+
+**Purpose:** Poll ingest status for a running or completed job.
+
+**Input:** `job_id` (string)
+
+### `reboot_ingest_cancel`
+
+**Purpose:** Cancel an ongoing ingest job.
+
+**Input:** `job_id` (string)
 
 ## Internal Components
 
 ### QueryClassifier
 
-Categorizes incoming queries as **conceptual**, **procedural**, or **factual** using an LLM call. This classification drives which `SearchConfig` weight recipe is applied.
+Categorizes incoming queries as **conceptual**, **procedural**, **factual**, or **debugging** using an LLM call. This classification drives which `SearchConfig` weight recipe is applied.
 
 ### SearchConfigSelector
 
@@ -129,11 +147,11 @@ Applies per-node confidence multipliers to search results. Confidence scores are
 
 ### FeedbackLogger
 
-Records behavioral signals to SQLite: query reformulations, explicit thumbs-up/down, whether retrieved context was actually used. These signals drive the confidence decay/reinforcement cycle.
+Records behavioral signals to SQLite. In the current implementation, feedback signals are `positive` and `negative` (see “Future Work” for richer signals).
 
 ### Ingestion Pipeline
 
-Uses tree-sitter to parse a target codebase into function/class-level nodes and Git history to create temporal edges. These are indexed into Graphiti/Neo4j.
+Uses tree-sitter to parse a target codebase into function/class-level nodes (Python/JS/TS) and index episodes into Graphiti/Neo4j.
 
 ## Design Decisions
 
@@ -158,7 +176,7 @@ Uses tree-sitter to parse a target codebase into function/class-level nodes and 
 - **MCP server:** Implemented alongside the FastAPI service. Tools are defined with clear input schemas and descriptions so agents know when and how to invoke them.
 - **API service:** FastAPI with async endpoints. Pydantic models for request/response schemas.
 - **Graph nodes:** Custom Pydantic entity schemas for Graphiti nodes (code functions, classes, modules).
-- **Confidence scores:** Stored as node metadata in Neo4j. Reinforced on positive signals, exponential decay over time.
+- **Confidence scores:** Persisted in SQLite and applied during post-ranking. Reinforced on positive signals and decayed over time.
 - **System prompt guidance:** A reference system prompt snippet is provided (see below) for configuring agents to use REBOOT tools reliably.
 - **Testing:** pytest for integration tests. Synthetic dataset for retrieval quality evaluation.
 - **Metrics:** Precision@K and MRR (Mean Reciprocal Rank) for measuring retrieval improvement.
@@ -206,9 +224,16 @@ You have access to REBOOT, an adaptive retrieval system for this codebase.
 | Method | Path              | Description                                                                  |
 | ------ | ----------------- | ---------------------------------------------------------------------------- |
 | POST   | `/query`          | Classify query, retrieve from Graphiti, rank with confidence, return context |
-| POST   | `/feedback`       | Record usage signal (thumbs up/down, reformulation, context-used)            |
+| POST   | `/feedback`       | Record usage signal (`positive` / `negative`)                                |
 | GET    | `/reboot-explain` | Explain last retrieval decision: scores, sources, confidence values          |
 | GET    | `/health`         | Service health check                                                         |
-| POST   | `/ingest`         | Trigger codebase ingestion into knowledge graph                              |
+| POST   | `/ingest`         | Start an async ingest job (returns `job_id`)                                 |
+| GET    | `/ingest-status/{job_id}` | Poll ingest job status                                               |
+| POST   | `/ingest-cancel/{job_id}` | Cancel an ingest job                                                  |
 
 These REST endpoints remain available for non-MCP integrations or direct testing. The MCP tools call into the same underlying logic.
+
+## Future Work / Deferred
+
+- **Richer feedback signals**: add `reformulation`, `context_used`, `context_ignored`, etc., and wire clients to emit them.
+- **Git-history temporal edges**: mine git log / commit history and model it explicitly as graph edges for recency-aware retrieval beyond episode timestamps.

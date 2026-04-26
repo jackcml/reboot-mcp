@@ -5,6 +5,8 @@ This document walks you through **cloning the repo, installing prerequisites, co
 
 It assumes **no prior setup** beyond a working computer and internet connection.
 
+For a shorter “front door” overview, start with [`README.md`](README.md).
+
 ---
 
 ## 1. What REBOOT Is (High Level)
@@ -295,13 +297,27 @@ curl -X POST http://localhost:8000/ingest \
   -d '{"repo_path": "/absolute/path/to/your/repo", "incremental": false}'
 ```
 
+`/ingest` starts an **async ingest job** and returns a `job_id` immediately. You can poll status until it completes.
+
 You should get a JSON response like:
 
 ```json
 {
-  "status": "ok",
-  "episodes_added": 123
+  "status": "started",
+  "job_id": "..."
 }
+```
+
+Poll status:
+
+```bash
+curl http://localhost:8000/ingest-status/<job_id>
+```
+
+Cancel (optional):
+
+```bash
+curl -X POST http://localhost:8000/ingest-cancel/<job_id>
 ```
 
 ### 10.2 Run a query
