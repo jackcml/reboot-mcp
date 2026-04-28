@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from eval.clients import JsonExtractionError
 from eval.explorer import ExplorerContextProvider
 from eval.models import (
     EvalCase,
@@ -22,6 +23,8 @@ class StubExplorerClient:
 
     def complete_json(self, system_prompt, user_prompt, *, schema_name, schema):
         payload = self._payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
         return LLMTrace(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -151,3 +154,42 @@ def test_explorer_fetch_context_normalizes_finish_results(tmp_path: Path):
     assert response["provider"] == "explorer"
     assert response["results"][0]["node_id"] == "explorer:pkg/module.py"
     assert response["results"][0]["confidence"] == 1.0
+
+
+def test_explorer_fetch_context_preserves_raw_response_on_json_parse_error(tmp_path: Path):
+    repo_path = _make_repo(tmp_path)
+    client = StubExplorerClient(
+        [
+            JsonExtractionError(
+                "Could not parse JSON object from LLM response",
+                raw_response='{"action":"search"}\nnot-json',
+            )
+        ]
+    )
+    provider = _provider(client)
+    repo = RepoSpec(id="sample", local_path=str(repo_path), cases=[])
+    case = EvalCase(
+        id="case-1",
+        problem_statement="Fix the bug.",
+        solution_patch="diff --git a/pkg/module.py b/pkg/module.py\n+return True\n",
+    )
+    prepared = PreparedRepo(
+        repo_id="sample",
+        repo_path=str(repo_path),
+        head_commit="abc123",
+        source=str(repo_path),
+    )
+    snapshot = RepositorySnapshot(
+        repo_root=str(repo_path),
+        head_commit="abc123",
+        tracked_files_total=1,
+        file_tree_excerpt="pkg/module.py",
+        key_files={},
+    )
+
+    generated_query, response = provider.fetch_context(repo, case, prepared, snapshot)
+
+    assert generated_query.confidence == 0.0
+    assert response["results"] == []
+    assert response["trace"]["error_type"] == "json_extraction_error"
+    assert response["trace"]["raw_response"] == '{"action":"search"}\nnot-json'

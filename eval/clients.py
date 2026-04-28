@@ -9,20 +9,39 @@ from urllib import error, parse, request
 from eval.models import LLMTrace, OpenAIModelConfig, ServerConfig
 
 
+class JsonExtractionError(ValueError):
+    def __init__(self, message: str, *, raw_response: str):
+        super().__init__(message)
+        self.raw_response = raw_response
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     candidate = text.strip()
     if candidate.startswith("```"):
         lines = candidate.splitlines()
         if len(lines) >= 3:
             candidate = "\n".join(lines[1:-1]).strip()
+    start = candidate.find("{")
+    if start == -1:
+        raise JsonExtractionError(
+            "LLM response did not contain a JSON object.",
+            raw_response=text,
+        )
     try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise
-        return json.loads(candidate[start : end + 1])
+        parsed, _ = json.JSONDecoder().raw_decode(candidate[start:])
+    except json.JSONDecodeError as exc:
+        snippet = candidate[max(start, exc.pos - 80) : exc.pos + 160]
+        raise JsonExtractionError(
+            f"Could not parse JSON object from LLM response: {exc.msg}. "
+            f"near={snippet!r}",
+            raw_response=text,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise JsonExtractionError(
+            f"Expected a JSON object from LLM response, got {type(parsed).__name__}.",
+            raw_response=text,
+        )
+    return parsed
 
 
 class RebootRestClient:

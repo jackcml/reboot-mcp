@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from eval.clients import OpenAIJsonClient
+from eval.clients import JsonExtractionError, OpenAIJsonClient
 from eval.models import EvalCase, ExplorerConfig, GeneratedQuery, PreparedRepo, RepoSpec, RepositorySnapshot
 
 
@@ -15,6 +15,8 @@ Your job is to fetch the most useful code context for solving the issue, not to 
 Use the available actions to inspect the repository and then finish with ranked context snippets.
 
 Return strict JSON matching the schema on every turn.
+Return exactly one JSON object and exactly one action per turn.
+Do not return multiple JSON objects, markdown fences, explanations, or prose outside the JSON object.
 Allowed actions:
 - list_files: inspect tracked file paths.
 - search: search repository text for a query.
@@ -73,12 +75,23 @@ class ExplorerContextProvider:
         final_payload: dict[str, Any] | None = None
 
         for _ in range(self._config.max_steps):
-            trace = self._client.complete_json(
-                EXPLORER_SYSTEM_PROMPT,
-                self._build_prompt(repo, case, snapshot, focus, history),
-                schema_name="explorer_action",
-                schema=EXPLORER_ACTION_SCHEMA,
-            )
+            try:
+                trace = self._client.complete_json(
+                    EXPLORER_SYSTEM_PROMPT,
+                    self._build_prompt(repo, case, snapshot, focus, history),
+                    schema_name="explorer_action",
+                    schema=EXPLORER_ACTION_SCHEMA,
+                )
+            except JsonExtractionError as exc:
+                return self._error_response(
+                    repo,
+                    case,
+                    focus,
+                    history,
+                    "json_extraction_error",
+                    str(exc),
+                    raw_response=exc.raw_response,
+                )
             traces.append(trace.model_dump(mode="json"))
             payload = trace.parsed_json
             action = str(payload["action"])
@@ -124,6 +137,39 @@ class ExplorerContextProvider:
                 "steps": history,
                 "llm_traces": traces,
                 "step_limit": self._config.max_steps,
+            },
+        }
+        return generated_query, response
+
+    def _error_response(
+        self,
+        repo: RepoSpec,
+        case: EvalCase,
+        focus: str,
+        history: list[dict[str, Any]],
+        error_type: str,
+        error: str,
+        *,
+        raw_response: str | None = None,
+    ) -> tuple[GeneratedQuery, dict[str, Any]]:
+        generated_query = GeneratedQuery(
+            query=focus,
+            rationale=f"Explorer failed before returning context: {error}",
+            file_context=case.file_context,
+            confidence=0.0,
+        )
+        response = {
+            "provider": "explorer",
+            "query_id": f"explorer:{repo.id}:{case.id}",
+            "query_type": "explorer_context",
+            "results": [],
+            "trace": {
+                "steps": history,
+                "llm_traces": [],
+                "step_limit": self._config.max_steps,
+                "error_type": error_type,
+                "error": error,
+                "raw_response": raw_response,
             },
         }
         return generated_query, response
