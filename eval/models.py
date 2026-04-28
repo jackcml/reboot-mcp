@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -23,6 +23,9 @@ class EvalLLMConfig(BaseModel):
 
     query_generator: OpenAIModelConfig = Field(
         default_factory=lambda: OpenAIModelConfig(max_tokens=250)
+    )
+    explorer: OpenAIModelConfig = Field(
+        default_factory=lambda: OpenAIModelConfig(max_tokens=1200)
     )
     judge: OpenAIModelConfig = Field(
         default_factory=lambda: OpenAIModelConfig(max_tokens=1200)
@@ -108,6 +111,16 @@ class SnapshotConfig(BaseModel):
     )
 
 
+class ExplorerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_steps: int = 6
+    max_search_results: int = 12
+    max_read_lines: int = 120
+    max_results: int = 8
+    max_observation_chars: int = 12000
+
+
 class EvalCase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,9 +171,11 @@ class EvalManifest(BaseModel):
 
     name: str
     description: str | None = None
+    context_provider: Literal["reboot", "explorer"] = "reboot"
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     llm: EvalLLMConfig = Field(default_factory=EvalLLMConfig)
+    explorer: ExplorerConfig = Field(default_factory=ExplorerConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     snapshot: SnapshotConfig = Field(default_factory=SnapshotConfig)
     repos: list[RepoSpec]
@@ -238,6 +253,7 @@ class CaseRunRecord(BaseModel):
     started_at: str
     finished_at: str
     duration_seconds: float
+    context_provider: str = "reboot"
     problem_statement: str
     solution_patch: str
     generated_query: GeneratedQuery | None = None
@@ -262,6 +278,7 @@ class RunSummary(BaseModel):
 
     run_id: str
     manifest_name: str
+    context_provider: str = "reboot"
     started_at: str
     finished_at: str
     total_repos: int

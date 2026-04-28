@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from eval.models import EvalManifest, GeneratedQuery, JudgeResult, PreparedRepo, RepoSpec, RepositorySnapshot
-from eval.runner import EvalRunner
+from eval.runner import EvalRunner, parse_args
 
 
 class StubEnvironment:
@@ -93,6 +93,39 @@ class StubQueryAgent:
         )
 
 
+class StubExplorerProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_context(self, repo, case, prepared_repo, snapshot):
+        self.calls += 1
+        return (
+            GeneratedQuery(
+                query=case.problem_statement,
+                rationale="Explorer returned direct context.",
+                file_context=case.file_context,
+                confidence=1.0,
+            ),
+            {
+                "provider": "explorer",
+                "query_id": "explorer:sample:case-1",
+                "query_type": "explorer_context",
+                "results": [
+                    {
+                        "node_id": "explorer:pkg/module.py",
+                        "name": "pkg.module.fix_bug",
+                        "file_path": "pkg/module.py",
+                        "content": "Relevant function body",
+                        "score": 0.9,
+                        "confidence": 0.9,
+                        "explanation": "Likely touched by the issue.",
+                    }
+                ],
+                "trace": {"steps": []},
+            },
+        )
+
+
 class StubJudge:
     def judge(self, repo, case, query, query_response, solution_patch):
         return JudgeResult(
@@ -160,6 +193,7 @@ def test_eval_runner_happy_path_writes_artifacts(tmp_path: Path):
     assert summary.total_repos == 1
     assert summary.total_cases == 1
     assert summary.successful_cases == 1
+    assert summary.context_provider == "reboot"
     assert summary.average_judge_score == 0.88
     assert environment.prepared_indexes == [0]
     assert environment.shutdown_calls == 1
@@ -199,3 +233,45 @@ def test_eval_runner_cancels_timed_out_ingest_and_uses_query_override(tmp_path: 
     assert reboot_client.cancel_calls == 1
     assert query_agent.calls == 0
     assert reboot_client.query_calls == [("Find the broken function.", None)]
+
+
+def test_eval_runner_explorer_provider_skips_reboot_environment_and_query(tmp_path: Path):
+    manifest_path = _write_manifest(tmp_path)
+    manifest = EvalManifest.model_validate(json.loads(manifest_path.read_text(encoding="utf-8")))
+    environment = StubEnvironment()
+    reboot_client = StubRebootClient()
+    query_agent = StubQueryAgent()
+    explorer_provider = StubExplorerProvider()
+    runner = EvalRunner(
+        manifest,
+        manifest_path,
+        run_id="run-003",
+        environment=environment,
+        reboot_client=reboot_client,
+        repo_manager=StubRepoManager(tmp_path / "checkout"),
+        query_agent=query_agent,
+        explorer_provider=explorer_provider,
+        judge=StubJudge(),
+        sleep_fn=lambda _: None,
+        context_provider="explorer",
+    )
+
+    summary = runner.run()
+
+    repo_record = summary.repos[0]
+    case_record = repo_record.cases[0]
+    assert summary.context_provider == "explorer"
+    assert case_record.context_provider == "explorer"
+    assert repo_record.ingest.final_status["stage"] == "skipped"
+    assert case_record.query_response["provider"] == "explorer"
+    assert environment.prepared_indexes == []
+    assert environment.shutdown_calls == 0
+    assert reboot_client.query_calls == []
+    assert query_agent.calls == 0
+    assert explorer_provider.calls == 1
+
+
+def test_parse_args_accepts_context_provider():
+    args = parse_args(["--config", "eval/examples/sample_manifest.json", "--context-provider", "explorer"])
+
+    assert args.context_provider == "explorer"

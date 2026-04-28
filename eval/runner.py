@@ -9,6 +9,7 @@ from typing import Any
 
 from eval.clients import OpenAIJsonClient, RebootRestClient
 from eval.environment import EvalEnvironment, PROJECT_ROOT
+from eval.explorer import ExplorerContextProvider
 from eval.models import (
     CaseRunRecord,
     EvalCase,
@@ -16,6 +17,7 @@ from eval.models import (
     GeneratedQuery,
     IngestRunResult,
     JudgeResult,
+    PreparedRepo,
     RepoRunRecord,
     RepoSpec,
     RepositorySnapshot,
@@ -224,16 +226,24 @@ class EvalRunner:
         reboot_client: RebootRestClient | None = None,
         repo_manager: RepositoryManager | None = None,
         query_agent: LLMQueryAgent | None = None,
+        explorer_provider: ExplorerContextProvider | None = None,
         judge: LLMContextJudge | None = None,
         sleep_fn=time.sleep,
         reuse_last_ingest: bool = False,
         keep_graph: bool = False,
+        context_provider: str | None = None,
     ):
         self._manifest = manifest
         self._manifest_path = manifest_path
         self._manifest_dir = manifest_path.parent
         self._run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self._reuse_last_ingest = reuse_last_ingest
+        self._context_provider = context_provider or manifest.context_provider
+        if self._context_provider not in {"reboot", "explorer"}:
+            raise ValueError(
+                f"Unsupported context_provider {self._context_provider!r}. "
+                "Expected 'reboot' or 'explorer'."
+            )
         artifact_root = self._resolve_project_path(manifest.workspace.artifact_root)
         clone_root = self._resolve_project_path(manifest.workspace.clone_root)
         self._artifacts = ArtifactStore(artifact_root, self._run_id)
@@ -249,9 +259,15 @@ class EvalRunner:
             self._manifest_dir,
             manifest.snapshot,
         )
-        self._query_agent = query_agent or LLMQueryAgent(
-            OpenAIJsonClient(manifest.llm.query_generator)
-        )
+        self._query_agent = query_agent
+        if self._query_agent is None and self._context_provider == "reboot":
+            self._query_agent = LLMQueryAgent(OpenAIJsonClient(manifest.llm.query_generator))
+        self._explorer_provider = explorer_provider
+        if self._explorer_provider is None and self._context_provider == "explorer":
+            self._explorer_provider = ExplorerContextProvider(
+                OpenAIJsonClient(manifest.llm.explorer),
+                manifest.explorer,
+            )
         self._judge = judge or LLMContextJudge(OpenAIJsonClient(manifest.llm.judge))
         self._sleep_fn = sleep_fn
 
@@ -268,6 +284,7 @@ class EvalRunner:
             "run_started",
             {
                 "manifest_name": self._manifest.name,
+                "context_provider": self._context_provider,
                 "repo_filter": repo_filter,
                 "case_filter": case_filter,
             },
@@ -278,7 +295,8 @@ class EvalRunner:
         ]
         try:
             for repo_index, repo in enumerate(selected_repos):
-                self._environment.prepare_for_repo(repo_index)
+                if self._context_provider == "reboot":
+                    self._environment.prepare_for_repo(repo_index)
                 repo_record = self._run_repo(repo, case_filter)
                 repos_out.append(repo_record)
                 self._artifacts.write_json(
@@ -286,7 +304,8 @@ class EvalRunner:
                     repo_record.model_dump(mode="json"),
                 )
         finally:
-            self._environment.shutdown()
+            if self._context_provider == "reboot":
+                self._environment.shutdown()
 
         finished_at = utc_now()
         case_scores = [
@@ -298,6 +317,7 @@ class EvalRunner:
         summary = RunSummary(
             run_id=self._run_id,
             manifest_name=self._manifest.name,
+            context_provider=self._context_provider,
             started_at=started_at,
             finished_at=finished_at,
             total_repos=len(repos_out),
@@ -314,6 +334,7 @@ class EvalRunner:
                 "total_cases": summary.total_cases,
                 "successful_cases": summary.successful_cases,
                 "average_judge_score": summary.average_judge_score,
+                "context_provider": self._context_provider,
             },
         )
         return summary
@@ -322,7 +343,16 @@ class EvalRunner:
         self._artifacts.append_event("repo_started", {"repo_id": repo.id})
         prepared_repo = self._repo_manager.prepare_repo(repo)
         snapshot = self._repo_manager.build_snapshot(prepared_repo)
-        if self._reuse_last_ingest:
+        if self._context_provider == "explorer":
+            self._artifacts.append_event("ingest_skipped", {"repo_id": repo.id})
+            ingest = IngestRunResult(
+                job_id="skipped",
+                timed_out=False,
+                start_response={"stage": "skipped", "reason": "context_provider=explorer"},
+                status_history=[],
+                final_status={"stage": "skipped", "reason": "context_provider=explorer"},
+            )
+        elif self._reuse_last_ingest:
             self._artifacts.append_event("ingest_reused", {"repo_id": repo.id})
             ingest = IngestRunResult(
                 job_id="reused",
@@ -339,7 +369,7 @@ class EvalRunner:
             case for case in repo.cases if case_filter is None or case.id == case_filter
         ]
         for case in selected_cases:
-            case_record = self._run_case(repo, case, snapshot)
+            case_record = self._run_case(repo, case, prepared_repo, snapshot)
             cases_out.append(case_record)
             self._artifacts.write_json(
                 f"cases/{repo.id}/{case.id}.json",
@@ -402,6 +432,7 @@ class EvalRunner:
         self,
         repo: RepoSpec,
         case: EvalCase,
+        prepared_repo: PreparedRepo,
         snapshot: RepositorySnapshot,
     ) -> CaseRunRecord:
         started_at = utc_now()
@@ -409,7 +440,11 @@ class EvalRunner:
         solution_patch = case.load_solution_patch(self._manifest_dir)
         self._artifacts.append_event(
             "case_started",
-            {"repo_id": repo.id, "case_id": case.id},
+            {
+                "repo_id": repo.id,
+                "case_id": case.id,
+                "context_provider": self._context_provider,
+            },
         )
 
         generated_query = None
@@ -418,23 +453,35 @@ class EvalRunner:
         error = None
         status = "ok"
         try:
-            if case.query_override:
-                generated_query = GeneratedQuery(
-                    query=case.query_override,
-                    rationale="Used query_override from manifest.",
-                    file_context=case.file_context,
-                    confidence=1.0,
+            if self._context_provider == "explorer":
+                if self._explorer_provider is None:
+                    raise RuntimeError("Explorer context provider is not configured.")
+                generated_query, query_response = self._explorer_provider.fetch_context(
+                    repo,
+                    case,
+                    prepared_repo,
+                    snapshot,
                 )
             else:
-                generated_query = self._query_agent.generate_query(repo, case, snapshot)
-                if case.file_context and not generated_query.file_context:
-                    generated_query = generated_query.model_copy(
-                        update={"file_context": case.file_context}
+                if case.query_override:
+                    generated_query = GeneratedQuery(
+                        query=case.query_override,
+                        rationale="Used query_override from manifest.",
+                        file_context=case.file_context,
+                        confidence=1.0,
                     )
-            query_response = self._reboot_client.query(
-                generated_query.query,
-                generated_query.file_context,
-            )
+                else:
+                    if self._query_agent is None:
+                        raise RuntimeError("REBOOT query agent is not configured.")
+                    generated_query = self._query_agent.generate_query(repo, case, snapshot)
+                    if case.file_context and not generated_query.file_context:
+                        generated_query = generated_query.model_copy(
+                            update={"file_context": case.file_context}
+                        )
+                query_response = self._reboot_client.query(
+                    generated_query.query,
+                    generated_query.file_context,
+                )
             judge_result = self._judge.judge(
                 repo,
                 case,
@@ -455,6 +502,7 @@ class EvalRunner:
             started_at=started_at,
             finished_at=finished_at,
             duration_seconds=time.monotonic() - start_clock,
+            context_provider=self._context_provider,
             problem_statement=case.problem_statement,
             solution_patch=solution_patch,
             generated_query=generated_query,
@@ -470,6 +518,7 @@ class EvalRunner:
                 "case_id": case.id,
                 "status": status,
                 "judge_score": judge_result.score if judge_result else None,
+                "context_provider": self._context_provider,
                 "error": error,
             },
         )
@@ -501,6 +550,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-id",
         help="Optional explicit run id. Defaults to a UTC timestamp.",
+    )
+    parser.add_argument(
+        "--context-provider",
+        choices=["reboot", "explorer"],
+        help=(
+            "Context provider to evaluate. Defaults to the manifest context_provider "
+            "or 'reboot'."
+        ),
     )
     parser.add_argument(
         "--reuse-last-ingest",
@@ -535,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         reuse_last_ingest=args.reuse_last_ingest,
         keep_graph=args.keep_graph,
+        context_provider=args.context_provider,
     )
     summary = runner.run(repo_filter=args.repo, case_filter=args.case)
     print(
@@ -546,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                 "total_cases": summary.total_cases,
                 "successful_cases": summary.successful_cases,
                 "average_judge_score": summary.average_judge_score,
+                "context_provider": summary.context_provider,
                 "artifacts_dir": str(
                     (PROJECT_ROOT / manifest.workspace.artifact_root / summary.run_id).resolve()
                 ),

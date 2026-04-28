@@ -36,6 +36,10 @@
     "judge": {
       "model": "gpt-5-mini",
       "max_tokens": 8192
+    },
+    "explorer": {
+      "model": "gpt-5-mini",
+      "max_tokens": 8192
     }
   },
   "workspace": {
